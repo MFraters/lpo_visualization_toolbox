@@ -15,6 +15,7 @@ use std::path::Path;
 use ndarray::prelude::*;
 use palette::{Gradient, LinSrgb};
 use plotters::prelude::*;
+use rayon::prelude::*;
 use std::error::Error;
 use std::io::prelude::*;
 use std::path::PathBuf;
@@ -23,6 +24,8 @@ use structopt::StructOpt;
 
 use serde_derive::{Deserialize, Serialize};
 //use serde::{Serialize, Deserialize};
+
+use std::io::{self, prelude::*, BufReader, BufWriter};
 
 #[derive(Serialize, Deserialize, Debug)]
 enum LaticeAxes {
@@ -47,10 +50,47 @@ struct Config {
     experiment_dirs: Vec<String>,
     pole_figures: PoleFigures,
 }
+
+#[derive(Debug, Deserialize)]
+//#[serde(rename_all = "PascalCase")]
+struct Record {
+    id: usize,
+    olivine_Euler_angles_phi: Option<f64>,
+    olivine_Euler_angles_theta: Option<f64>,
+    olivine_Euler_angles_z: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+//#[serde(rename_all = "PascalCase")]
+struct ParticleRecord {
+    id: usize,
+    x: f64,
+    y: f64,
+    z: Option<f64>,
+    olivine_deformation_type: f64,
+    full_norm_square: Option<f64>,
+    triclinic_norm_square_p1: Option<f64>,
+    triclinic_norm_square_p2: Option<f64>,
+    triclinic_norm_square_p3: Option<f64>,
+    monoclinic_norm_square_p1: Option<f64>,
+    monoclinic_norm_square_p2: Option<f64>,
+    monoclinic_norm_square_p3: Option<f64>,
+    orthohombic_norm_square_p1: Option<f64>,
+    orthohombic_norm_square_p2: Option<f64>,
+    orthohombic_norm_square_p3: Option<f64>,
+    tetragonal_norm_square_p1: Option<f64>,
+    tetragonal_norm_square_p2: Option<f64>,
+    tetragonal_norm_square_p3: Option<f64>,
+    hexagonal_norm_square_p1: Option<f64>,
+    hexagonal_norm_square_p2: Option<f64>,
+    hexagonal_norm_square_p3: Option<f64>,
+    isotropic_norm_square: Option<f64>,
+}
+
 #[derive(Deserialize)]
 struct PoleFigures {
-    time_steps: Vec<u64>,
-    particle_ids: Vec<u64>,
+    times: Vec<f64>,
+    particle_ids: Vec<usize>,
     axes: Vec<LaticeAxes>,
 }
 
@@ -94,126 +134,342 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config: Config = toml::from_str(&config_file_string).unwrap();
 
-    let base_dir = config.base_dir;
-    for experiment_dir in config.experiment_dirs {
+    println!("particle ids size {}", config.pole_figures.particle_ids.len());
+
+    let base_dir = config.base_dir.clone();
+
+    // start the experiments
+    let experiment_dirs = config.experiment_dirs.clone();
+    experiment_dirs.par_iter().for_each(|experiment_dir| {
+        //for experiment_dir in config.experiment_dirs {
         println!("Processing experiment {}", experiment_dir);
-        for time_step in &config.pole_figures.time_steps {
-            let lpo_dir = base_dir.clone() + &experiment_dir;
 
-            let mut file_found: bool = false;
-            let file_prefix = "particle_LPO/weighted_LPO";
-            //let time = 100;
-            let mut rank_id = 0;
-            let particle_id = 0;
+        let lpo_dir = base_dir.clone() + &experiment_dir;
 
-            let mut Pva = Vec::new();
-            let mut Pvb = Vec::new();
-            let mut Pvc = Vec::new();
-            while !file_found {
-                let angles_file =
-                    format!("{}{}-{:05}.{:04}.dat", lpo_dir, file_prefix, time_step, rank_id);
-                let angles_file = Path::new(&angles_file);
-                let output_file = format!(
-                    "{}{}_t{:05}.{:05}.png",
-                    lpo_dir, file_prefix, time_step, particle_id
-                );
-                let output_file = Path::new(&output_file);
+        // get a vector with the time for all the timesteps
+        let statistics_file = lpo_dir.to_owned() + "statistics";
 
-                println!("  trying file name: {}", angles_file.display());
+        println!("  file:{}", statistics_file);
+        let file = File::open(statistics_file).unwrap();
+        let reader = BufReader::new(file);
 
-                // check wheter file exists, if not it means that is reached the max rank, so stop.
-                if !(fs::metadata(angles_file).is_ok()) {
-                    println!(
-                        "particle id {} not found for timestep {}.",
-                        particle_id, time_step
-                    );
-                    file_found = false;
-                    break;
+        let mut data: String = "".to_string();
+        for line in reader.lines() {
+            let line = line.unwrap();
+            let line = line.trim();
+            let mut line = line.replace("  ", " ");
+            while let Some(_) = line.find("  ") {
+                line = line.replace("  ", " ");
+            }
+
+            if line.find('#') != Some(0) {
+                if line.find("particle_LPO") != None {
+                    //data.push_str(line);
+                    data = data + &line + "\n";
                 }
-
-                // check wheter file is empty, if not continue to next rank
-                if fs::metadata(angles_file)?.len() == 0 {
-                    rank_id = rank_id + 1;
-                    continue;
-                }
-                file_found = true;
-
-                println!("  file:{}", angles_file.display());
-                let file = File::open(angles_file)?;
-                let mut rdr = csv::ReaderBuilder::new()
-                    .has_headers(false)
-                    .delimiter(b' ')
-                    .from_reader(file);
-
-                type Record = (u64, f64, f64, f64, f64);
-
-                for result in rdr.deserialize() {
-                    // We must tell Serde what type we want to deserialize into.
-                    let record: Record = result?;
-                    if record.0 == particle_id {
-                        let deg_to_rad = std::f64::consts::PI / 180.;
-                        let dcm = dir_cos_matrix2(
-                            record.1 * deg_to_rad,
-                            record.2 * deg_to_rad,
-                            record.3 * deg_to_rad,
-                        )?;
-
-                        Pva.push(dcm.row(0).to_owned());
-                        Pvb.push(dcm.row(1).to_owned());
-                        Pvc.push(dcm.row(2).to_owned());
-                    }
-                }
-
-                let sphere_points = 151;
-                let n_grains = Pva.len();
-
-                let mut Pa = Array2::zeros((n_grains, 3));
-                let mut Pb = Array2::zeros((n_grains, 3));
-                let mut Pc = Array2::zeros((n_grains, 3));
-                for i in 0..n_grains {
-                    for j in 0..3 {
-                        Pa[[i, j]] = Pva[i][j];
-                        Pb[[i, j]] = Pvb[i][j];
-                        Pc[[i, j]] = Pvc[i][j];
-                    }
-                }
-
-                let lambert = create_lambertEA_gridpoint(sphere_points, "upper".to_string())?;
-                let mut S = Array2::zeros((3, sphere_points * sphere_points));
-
-                for i in 0..sphere_points {
-                    for j in 0..sphere_points {
-                        S[[0, i * sphere_points + j]] = lambert.x[[i, j]];
-                        S[[1, i * sphere_points + j]] = lambert.y[[i, j]];
-                        S[[2, i * sphere_points + j]] = lambert.z[[i, j]];
-                    }
-                }
-
-                let countsA = gaussian_orientation_counts(&Pa, &S, sphere_points)?;
-                let countsB = gaussian_orientation_counts(&Pb, &S, sphere_points)?;
-                let countsC = gaussian_orientation_counts(&Pc, &S, sphere_points)?;
-                println!(
-                    "  Before make_polefigures: Elapsed time: {:.2?}",
-                    before.elapsed()
-                );
-                make_polefigures(
-                    n_grains,
-                    time_step,
-                    0,
-                    &countsA,
-                    &countsB,
-                    &countsC,
-                    &lambert,
-                    output_file,
-                );
-
-                println!(
-                    "  After make_polefigures: Elapsed time: {:.2?}",
-                    before.elapsed()
-                );
             }
         }
-    }
+
+        //println!("{}",data);
+
+        let mut timestep_to_time: Vec<f64> = vec![];
+        let mut rdr = csv::ReaderBuilder::new()
+            .trim(csv::Trim::All)
+            .delimiter(b' ')
+            .comment(Some(b'#'))
+            .has_headers(false)
+            .from_reader(data.as_bytes()); //csv::Reader::from_reader(file);
+        for result in rdr.records() {
+            // The iterator yields Result<StringRecord, Error>, so we check the
+            // error here..
+            let record = result.unwrap().clone();
+            //println!("{:?}", record);
+            //println!("{:?}", record.get(1));
+            let time = record.get(1).clone();
+            match time {
+                Some(time) => timestep_to_time.push(time.to_string().parse::<f64>().unwrap()),
+                None => assert!(false, "Time not found"),
+            }
+        }
+        //std::process::exit(0);
+
+        for output_time in &config.pole_figures.times {
+            // find closest value in timestep_to_time
+            // assume it always starts a zero
+            //let before_time = timestep_to_time.iter().position(|x| x < &output_time);
+            let after_time = timestep_to_time.iter().position(|x| x > &output_time);
+
+            let after_timestep = match after_time {
+                Some(timestep) => timestep,
+                None => timestep_to_time.len() - 1,
+            };
+
+            // todo: oneline
+            let mut before_timestep = after_timestep;
+            if after_timestep > 0 {
+                before_timestep = after_timestep - 1
+            }
+
+            let mut time_step: u64 = 0;
+
+            // check wheter before_timestep or after_timestep is closer to output_time,
+            // then use that one.
+            let before_timestep_diff = (output_time - timestep_to_time[before_timestep]).abs();
+            let after_timestep_diff = (output_time - timestep_to_time[after_timestep]).abs();
+
+            if before_timestep_diff < after_timestep_diff {
+                time_step = before_timestep as u64;
+            } else {
+                time_step = after_timestep as u64;
+            }
+
+            let time = timestep_to_time[time_step as usize];
+
+            println!(
+                "flag 1 {}, {},-- {}, {}, -- time_step = {}, time = {}",
+                before_timestep,
+                after_timestep,
+                timestep_to_time[before_timestep],
+                timestep_to_time[after_timestep],
+                time_step,
+                time
+            );
+            //std::process::exit(0);
+
+            let file_prefix = "particle_LPO/weighted_LPO";
+            let file_particle_prefix = "particle_LPO/particles";
+            //let time = 100;
+            let mut rank_id = 0;
+            println!("particle ids size {}", config.pole_figures.particle_ids.len());
+            for particle_id in &config.pole_figures.particle_ids {
+                println!("processing particle_id {}",particle_id);
+                let mut Pva = Vec::new();
+                let mut Pvb = Vec::new();
+                let mut Pvc = Vec::new();
+                let mut file_found: bool = false;
+                while !file_found {
+                    let angles_file = format!(
+                        "{}{}-{:05}.{:04}.dat",
+                        lpo_dir, file_prefix, time_step, rank_id
+                    );
+                    let angles_file = Path::new(&angles_file);
+                    let output_file = format!(
+                        "{}{}_t{:05}.{:05}.png",
+                        lpo_dir, file_prefix, time_step, particle_id
+                    );
+                    let output_file = Path::new(&output_file);
+                    let particle_file = format!(
+                        "{}{}-{:05}.{:04}.dat",
+                        lpo_dir, file_particle_prefix, time_step, rank_id
+                    );
+                    let particle_info_file = Path::new(&particle_file);
+
+                    println!("  trying file name: {}", angles_file.display());
+
+                    // check wheter file exists, if not it means that is reached the max rank, so stop.
+                    if !(fs::metadata(angles_file).is_ok()) {
+                        println!(
+                            "particle id {} not found for timestep {}.",
+                            particle_id, time_step
+                        );
+                        file_found = false;
+                        break;
+                    }
+
+                    // check wheter file is empty, if not continue to next rank
+                    if fs::metadata(angles_file).unwrap().len() == 0 {
+                        rank_id = rank_id + 1;
+                        continue;
+                    }
+
+                    println!("  file:{}", angles_file.display());
+                    let file = File::open(angles_file).unwrap();
+
+                    let buf_reader = BufReader::new(file);
+
+                    let compressed = false;
+                     
+                    //if compressed {
+                        // decoding if needed
+                        let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
+                        let mut decoded_data = Vec::new();
+                        decoder.read_to_end(&mut decoded_data).unwrap();
+                        let decoded_string = String::from_utf8_lossy(&decoded_data);
+                        // end decoding if needed
+                        let mut rdr =csv::ReaderBuilder::new()
+                            .has_headers(true)
+                            .delimiter(b' ')
+                            .from_reader(decoded_string.as_bytes());
+                    //} else {
+                    //    let mut rdr =csv::ReaderBuilder::new()
+                    //        .has_headers(true)
+                    //        .delimiter(b' ')
+                    //        .from_reader(buf_reader)
+                    //}
+                    ;
+
+                    //// decoding if needed
+                    //let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
+                    //let mut decoded_data = Vec::new();
+                    //decoder.read_to_end(&mut decoded_data).unwrap();
+                    //let decoded_string = String::from_utf8_lossy(&decoded_data);
+                    //// end decoding if needed
+
+                    //let mut rdr = csv::ReaderBuilder::new()
+                    //    .has_headers(true)
+                    //    .delimiter(b' ')
+                    //    .from_reader(decoded_string.as_bytes());
+
+                    //let mut rdr = csv::ReaderBuilder::new()
+                    //.has_headers(true)
+                    //.delimiter(b' ')
+                    //.from_reader(decoded_string.as_bytes());
+
+                    //type Record = (u64, f64, f64, f64, f64);
+
+                    //let Record_array = Record.into()
+
+                    for result in rdr.deserialize() {
+                        // We must tell Serde what type we want to deserialize into.
+                        let record: Record = result.unwrap();
+                        if record.id == *particle_id {
+                            let deg_to_rad = std::f64::consts::PI / 180.;
+                            let dcm = dir_cos_matrix2(
+                                record.olivine_Euler_angles_phi.unwrap() * deg_to_rad,
+                                record.olivine_Euler_angles_theta.unwrap() * deg_to_rad,
+                                record.olivine_Euler_angles_z.unwrap() * deg_to_rad,
+                            )
+                            .unwrap();
+
+                            Pva.push(dcm.row(0).to_owned());
+                            Pvb.push(dcm.row(1).to_owned());
+                            Pvc.push(dcm.row(2).to_owned());
+                        }
+                    }
+
+                    // check if the particle id was found in this file, otherwise continue
+                    if Pva.len() == 0 {
+                        rank_id = rank_id + 1;
+                        continue;
+                    }
+                    file_found = true;
+
+                    // retrieve anisotropy info
+                    let mut particle_record = ParticleRecord {
+                        id: 0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: Some(0.0),
+                        olivine_deformation_type: 0.0,
+                        full_norm_square: None,
+                        triclinic_norm_square_p1: None,
+                        triclinic_norm_square_p2: None,
+                        triclinic_norm_square_p3: None,
+                        monoclinic_norm_square_p1: None,
+                        monoclinic_norm_square_p2: None,
+                        monoclinic_norm_square_p3: None,
+                        orthohombic_norm_square_p1: None,
+                        orthohombic_norm_square_p2: None,
+                        orthohombic_norm_square_p3: None,
+                        tetragonal_norm_square_p1: None,
+                        tetragonal_norm_square_p2: None,
+                        tetragonal_norm_square_p3: None,
+                        hexagonal_norm_square_p1: None,
+                        hexagonal_norm_square_p2: None,
+                        hexagonal_norm_square_p3: None,
+                        isotropic_norm_square: None,
+                    };
+                    /*let mut particle_x = 0.0;
+                    let mut particle_y = 0.0;
+                    let mut particle_z = 0.0;
+                    let mut particle_water = 0.0;
+                    let mut particle_anisotropic_percentage = 0.0;
+                    let mut particle_hexagonal_percentage = 0.0;*/
+
+                    let particle_info_file = File::open(particle_info_file).unwrap();
+                    let buf_reader = BufReader::new(particle_info_file);
+
+                    let mut rdr = csv::ReaderBuilder::new()
+                        .has_headers(true)
+                        .delimiter(b' ')
+                        .from_reader(buf_reader);
+                    //let mut rdr = csv::ReaderBuilder::new()
+                    //    .has_headers(true)
+                    //    .delimiter(b' ')
+                    //    .from_reader(particle_info_file);
+
+                    for result in rdr.deserialize() {
+                        // We must tell Serde what type we want to deserialize into.
+                        let record: ParticleRecord = result.unwrap();
+                        if record.id == *particle_id {
+                            particle_record = record;
+                            /*particle_x = record.x;
+                            particle_y = record.y;
+                            particle_z = record.z.unwrap();
+                            particle_water = record.water;
+                            particle_anisotropic_percentage = record.anis_perc.unwrap();
+                            particle_hexagonal_percentage = record.hex_perc.unwrap();*/
+                        }
+                    }
+
+                    // end retrieve anisotropy info
+
+                    let sphere_points = 151;
+                    let n_grains = Pva.len();
+
+                    let mut Pa = Array2::zeros((n_grains, 3));
+                    let mut Pb = Array2::zeros((n_grains, 3));
+                    let mut Pc = Array2::zeros((n_grains, 3));
+                    for i in 0..n_grains {
+                        for j in 0..3 {
+                            Pa[[i, j]] = Pva[i][j];
+                            Pb[[i, j]] = Pvb[i][j];
+                            Pc[[i, j]] = Pvc[i][j];
+                        }
+                    }
+
+                    let lambert =
+                        create_lambertEA_gridpoint(sphere_points, "upper".to_string()).unwrap();
+                    let mut S = Array2::zeros((3, sphere_points * sphere_points));
+
+                    for i in 0..sphere_points {
+                        for j in 0..sphere_points {
+                            S[[0, i * sphere_points + j]] = lambert.x[[i, j]];
+                            S[[1, i * sphere_points + j]] = lambert.y[[i, j]];
+                            S[[2, i * sphere_points + j]] = lambert.z[[i, j]];
+                        }
+                    }
+
+                    let countsA = gaussian_orientation_counts(&Pa, &S, sphere_points).unwrap();
+                    let countsB = gaussian_orientation_counts(&Pb, &S, sphere_points).unwrap();
+                    let countsC = gaussian_orientation_counts(&Pc, &S, sphere_points).unwrap();
+                    println!(
+                        "  Before make_polefigures: Elapsed time: {:.2?}",
+                        before.elapsed()
+                    );
+                    make_polefigures(
+                        n_grains,
+                        &time_step,
+                        0,
+                        &countsA,
+                        &countsB,
+                        &countsC,
+                        &lambert,
+                        output_file,
+                        &particle_record,
+                        time,
+                    )
+                    .unwrap();
+
+                    println!(
+                        "  After make_polefigures: Elapsed time: {:.2?}",
+                        before.elapsed()
+                    );
+                }
+                println!("go to next id");
+            }
+        }
+    }); //.collect();//}
     Ok(())
 }
 
@@ -286,6 +542,8 @@ fn make_polefigures(
     countsC: &Array2<f64>,
     Lambert: &Lambert,
     output_file: &Path,
+    particle_record: &ParticleRecord,
+    time: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let before = Instant::now();
     let one_eleventh = 1. / 11.;
@@ -367,18 +625,245 @@ fn make_polefigures(
     println!("    Before drawing: Elapsed time: {:.2?}", before.elapsed());
     let path_string = output_file.to_string_lossy().into_owned();
     println!("    save file to {}", path_string);
-    let root = BitMapBackend::new(&path_string, (figure_width + 10, figure_height + 100))
+    let root = BitMapBackend::new(&path_string, (figure_width + 10, figure_height + 150))
         .into_drawing_area();
     root.fill(&WHITE)?;
 
     println!("    made root: Elapsed time: {:.2?}", before.elapsed());
-    let (left, right) = root.split_horizontally(figure_width);
+    let (upper, lower) = root.split_vertically(150);
+
+    // Do stuff in upper
+
+    // preprocessing particle data:
+    let pr = particle_record;
+    let full_norm_square = particle_record.full_norm_square.unwrap();
+    let isotropic = pr.isotropic_norm_square.unwrap();
+
+    let tric_unsorted = [
+        pr.triclinic_norm_square_p1.unwrap(),
+        pr.triclinic_norm_square_p2.unwrap(),
+        pr.triclinic_norm_square_p3.unwrap(),
+    ];
+    let mono_unsorted = [
+        pr.monoclinic_norm_square_p1.unwrap(),
+        pr.monoclinic_norm_square_p2.unwrap(),
+        pr.monoclinic_norm_square_p3.unwrap(),
+    ];
+    let orth_unsorted = [
+        pr.orthohombic_norm_square_p1.unwrap(),
+        pr.orthohombic_norm_square_p2.unwrap(),
+        pr.orthohombic_norm_square_p3.unwrap(),
+    ];
+    let tetr_unsorted = [
+        pr.tetragonal_norm_square_p1.unwrap(),
+        pr.tetragonal_norm_square_p2.unwrap(),
+        pr.tetragonal_norm_square_p3.unwrap(),
+    ];
+    let hexa_unsorted = [
+        pr.hexagonal_norm_square_p1.unwrap(),
+        pr.hexagonal_norm_square_p2.unwrap(),
+        pr.hexagonal_norm_square_p3.unwrap(),
+    ];
+
+    let mut tric_sorted = tric_unsorted.clone();
+    let mut mono_sorted = mono_unsorted.clone();
+    let mut orth_sorted = orth_unsorted.clone();
+    let mut tetr_sorted = tetr_unsorted.clone();
+    let mut hexa_sorted = hexa_unsorted.clone();
+
+    let total_anisotropy =
+        tric_sorted[0] + mono_sorted[0] + orth_sorted[0] + tetr_sorted[0] + hexa_sorted[0];
+
+    tric_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    mono_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    orth_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    tetr_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    hexa_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    //let mut tric_perc_full = tric_unsorted.clone();
+    //let mut mono_perc_full = mono_unsorted.clone();
+    //let mut orth_perc_full = orth_unsorted.clone();
+    //let mut tetr_perc_full = tetr_unsorted.clone();
+    //let mut hexa_perc_full = hexa_unsorted.clone();
+
+    let tric_perc_full = tric_unsorted
+        .into_iter()
+        .map(|v| (v / full_norm_square) * 100.)
+        .collect::<Vec<f64>>();
+    let mono_perc_full = mono_unsorted
+        .iter()
+        .map(|v| (v / full_norm_square) * 100.)
+        .collect::<Vec<f64>>(); //.collect();
+    let orth_perc_full = orth_unsorted
+        .iter()
+        .map(|v| (v / full_norm_square) * 100.)
+        .collect::<Vec<f64>>(); //.collect();
+    let tetr_perc_full = tetr_unsorted
+        .iter()
+        .map(|v| (v / full_norm_square) * 100.)
+        .collect::<Vec<f64>>(); //.collect();
+    let hexa_perc_full = hexa_unsorted
+        .iter()
+        .map(|v| (v / full_norm_square) * 100.)
+        .collect::<Vec<f64>>(); //.collect();
+
+    //let tric_perc_ani = tric_sorted.iter().map(|v| {(v/full_norm_square)*100.}).collect();
+    //let mono_perc_ani = mono_sorted.iter().map(|v| {(v/full_norm_square)*100.}).collect();
+    //let orth_perc_ani = orth_sorted.iter().map(|v| {(v/full_norm_square)*100.}).collect();
+    //let tetr_perc_ani = tetr_sorted.iter().map(|v| {(v/full_norm_square)*100.}).collect();
+    //let hexa_perc_ani = hexa_sorted.iter().map(|v| {(v/full_norm_square)*100.}).collect();
+
+    let hp = Percentage {
+        total: figure_height as f64,
+    }; //(100/figure_height) as i32;
+    let wp = Percentage {
+        total: figure_width as f64 / number_of_figures as f64,
+    };
+
+    let font_size = 35;
+    let line_distance = 5.5; //6.;//5.5;
+    let top_margin = 0.25;
+    let left_margin = 0.5;
+    let halfway_margin = 52.5; //.;
+    let font_type = "Inconsolata"; //"consolas";//"sans-serif"
+
+    upper
+        .draw(&Text::new(
+            format!("time={:.5e}, position=({:.3e}:{:.3e}:{:.3e}), ODT={:.4}, grains={}, anisotropic%={:.4}",time,particle_record.x,particle_record.y,particle_record.z.unwrap(),particle_record.olivine_deformation_type, n_grains,((total_anisotropy)/full_norm_square)*100.),
+            ((wp.calc(left_margin) ) as i32, hp.calc(top_margin) as i32),
+            (font_type, font_size).into_font(),
+        ))?;
+    upper.draw(&Text::new(
+        format!(
+            "hex%={:.2},{:.2},{:.2}",
+            hexa_perc_full[0], hexa_perc_full[1], hexa_perc_full[2]
+        ),
+        (
+            (left_margin) as i32,
+            hp.calc(top_margin + 1.0 * line_distance) as i32,
+        ),
+        (font_type, font_size).into_font(),
+    ))?;
+    upper.draw(&Text::new(
+        format!(
+            "h/a%={:.2},{:.2},{:.2}",
+            ((hexa_unsorted[0]) / (total_anisotropy)) * 100.,
+            ((hexa_unsorted[1]) / (total_anisotropy)) * 100.,
+            ((hexa_unsorted[2]) / (total_anisotropy)) * 100.
+        ),
+        (
+            (left_margin) as i32,
+            hp.calc(top_margin + 2.0 * line_distance) as i32,
+        ),
+        (font_type, font_size).into_font(),
+    ))?;
+
+    upper.draw(&Text::new(
+        format!(
+            "tet%={:.2},{:.2},{:.2}",
+            tetr_perc_full[0], tetr_perc_full[1], tetr_perc_full[2]
+        ),
+        (
+            (left_margin + (figure_width as f64) * 0.2) as i32,
+            hp.calc(top_margin + 1.0 * line_distance) as i32,
+        ),
+        (font_type, font_size).into_font(),
+    ))?;
+    upper.draw(&Text::new(
+        format!(
+            "t/a%={:.2},{:.2},{:.2}",
+            ((tetr_unsorted[0]) / (total_anisotropy)) * 100.,
+            ((tetr_unsorted[1]) / (total_anisotropy)) * 100.,
+            ((tetr_unsorted[2]) / (total_anisotropy)) * 100.
+        ),
+        (
+            (left_margin + (figure_width as f64) * 0.2) as i32,
+            hp.calc(top_margin + 2.0 * line_distance) as i32,
+        ),
+        (font_type, font_size).into_font(),
+    ))?;
+    upper.draw(&Text::new(
+        format!(
+            "ort%={:.2},{:.2},{:.2}",
+            orth_perc_full[0], orth_perc_full[1], orth_perc_full[2]
+        ),
+        (
+            (left_margin + (figure_width as f64) * 0.4) as i32,
+            hp.calc(top_margin + 1.0 * line_distance) as i32,
+        ),
+        (font_type, font_size).into_font(),
+    ))?;
+    upper.draw(&Text::new(
+        format!(
+            "o/a%={:.2},{:.2},{:.2}",
+            ((orth_unsorted[0]) / (total_anisotropy)) * 100.,
+            ((orth_unsorted[1]) / (full_norm_square - isotropic)) * 100.,
+            ((orth_unsorted[2]) / (full_norm_square - isotropic)) * 100.
+        ),
+        (
+            (left_margin + (figure_width as f64) * 0.4) as i32,
+            hp.calc(top_margin + 2.0 * line_distance) as i32,
+        ),
+        (font_type, font_size).into_font(),
+    ))?;
+    upper.draw(&Text::new(
+        format!(
+            "mon%={:.2},{:.2},{:.2}",
+            mono_perc_full[0], mono_perc_full[1], mono_perc_full[2]
+        ),
+        (
+            (left_margin + (figure_width as f64) * 0.6) as i32,
+            hp.calc(top_margin + 1.0 * line_distance) as i32,
+        ),
+        (font_type, font_size).into_font(),
+    ))?;
+    upper.draw(&Text::new(
+        format!(
+            "m/a%={:.2},{:.2},{:.2}",
+            ((mono_unsorted[0]) / (total_anisotropy)) * 100.,
+            ((mono_unsorted[1]) / (full_norm_square - isotropic)) * 100.,
+            ((mono_unsorted[2]) / (full_norm_square - isotropic)) * 100.
+        ),
+        (
+            (left_margin + (figure_width as f64) * 0.6) as i32,
+            hp.calc(top_margin + 2.0 * line_distance) as i32,
+        ),
+        (font_type, font_size).into_font(),
+    ))?;
+    upper.draw(&Text::new(
+        format!(
+            "tri%={:.2},{:.2},{:.2}",
+            tric_perc_full[0], tric_perc_full[1], tric_perc_full[2]
+        ),
+        (
+            (left_margin + (figure_width as f64) * 0.8) as i32,
+            hp.calc(top_margin + 1.0 * line_distance) as i32,
+        ),
+        (font_type, font_size).into_font(),
+    ))?;
+    upper.draw(&Text::new(
+        format!(
+            "t/a%={:.2},{:.2},{:.2}",
+            ((tric_unsorted[0]) / (total_anisotropy)) * 100.,
+            ((tric_unsorted[1]) / (full_norm_square - isotropic)) * 100.,
+            ((tric_unsorted[2]) / (full_norm_square - isotropic)) * 100.
+        ),
+        (
+            (left_margin + (figure_width as f64) * 0.8) as i32,
+            hp.calc(top_margin + 2.0 * line_distance) as i32,
+        ),
+        (font_type, font_size).into_font(),
+    ))?;
+
+    // do stuff in lower:
+
+    let font_size = 45;
+    let (left, right) = lower.split_horizontally(figure_width);
     let drawing_areas = left.split_evenly((1, number_of_figures));
 
     println!("    number of figures = {}", number_of_figures);
     for figure_number in 0..number_of_figures {
-        let (upper, lower) = drawing_areas[figure_number].split_vertically(100);
-        let mut chart = ChartBuilder::on(&lower).build_ranged(
+        let mut chart = ChartBuilder::on(&drawing_areas[figure_number]).build_ranged(
             -Lambert.R - 0.05..Lambert.R + 0.15,
             -Lambert.R - 0.05..Lambert.R + 0.15,
         )?;
@@ -446,96 +931,138 @@ fn make_polefigures(
         //chart.draw_series(std::iter::once(PathElement::new(vec![(0.,-400.),(0.,400.)],&BLACK)));
         //chart.draw_series(std::iter::once(PathElement::new(vec![(-400.,0.),(400.,0.)],&BLACK)));
 
-        let hp = Percentage {
-            total: figure_height as f64,
-        }; //(100/figure_height) as i32;
-        let wp = Percentage {
-            total: figure_width as f64 / number_of_figures as f64,
-        };
-
         println!(
             "      before 2st drawing: Elapsed time: {:.2?}",
             before.elapsed()
         );
-        let font_size = 50;
-        let line_distance = 5.5;
-        let top_margin = 0.2;
-        let left_margin = 0.5;
-        let font_type = "Inconsolata";//"consolas";//"sans-serif"
+
         match figure_number {
             0 => {
+                //let x = -100e3;
+                //let y = -100.125e3;
+                drawing_areas[figure_number]
+                    .draw(&Text::new(
+                        format!("a-axis"),
+                        (
+                            wp.calc(left_margin) as i32,
+                            hp.calc(top_margin + 1.0 * line_distance) as i32,
+                        ),
+                        (font_type, font_size, FontStyle::Bold).into_font(),
+                    ))
+                    .unwrap();
                 drawing_areas[figure_number].draw(&Text::new(
-                    format!("a-axis"),
-                    (wp.calc(left_margin) as i32, hp.calc(top_margin) as i32),
+                    format!("max={:.3}", max_count_value),
+                    (
+                        wp.calc(left_margin) as i32,
+                        hp.calc(top_margin + 0.0 * line_distance) as i32,
+                    ),
+                    (font_type, font_size, FontStyle::Bold).into_font(),
+                ))?;
+                /*drawing_areas[figure_number]
+                .draw(&Text::new(
+                    format!("t={:.5}",time),
+                    ((wp.calc(left_margin+halfway_margin) ) as i32, hp.calc(top_margin + 1.0 * line_distance) as i32),
                     (font_type, font_size).into_font(),
-                )).unwrap();
-                drawing_areas[figure_number].draw(&Text::new(
-                    format!("max = {:.2}", max_count_value),
-                    (wp.calc(left_margin) as i32, hp.calc(top_margin+line_distance) as i32),
+                ))
+                .unwrap();*/
+                /*drawing_areas[figure_number].draw(&Text::new(
+                    format!("W={:.5}", particle_record.water),
+                    (
+                        wp.calc(left_margin+halfway_margin) as i32,
+                        hp.calc(top_margin + 1. * line_distance) as i32,
+                    ),
                     (font_type, font_size).into_font(),
                 ))?;
                 drawing_areas[figure_number].draw(&Text::new(
-                    format!("T = {}", n_grains),
-                    (wp.calc(left_margin-0.4) as i32, hp.calc(top_margin+2.*line_distance) as i32),
+                    format!("G={}", n_grains),
+                    (
+                        wp.calc(left_margin+halfway_margin) as i32,
+                        hp.calc(top_margin + 2. * line_distance) as i32,
+                    ),
                     (font_type, font_size).into_font(),
-                ))?;
-                drawing_areas[figure_number].draw(&Text::new(
-                    format!("P = {}", n_grains),
-                    (wp.calc(left_margin+0.2) as i32, hp.calc(top_margin+3.*line_distance) as i32),
-                    (font_type, font_size).into_font(),
-                ))?;
+                ))?;*/
                 drawing_areas[figure_number].draw(&Text::new(
                     format!("Z"),
-                    (wp.calc(46.4) as i32, hp.calc(11.) as i32),
+                    (wp.calc(46.4) as i32, (hp.calc(11.) - 85.) as i32),
                     (font_type, font_size).into_font(),
                 ))?;
                 drawing_areas[figure_number].draw(&Text::new(
                     format!("X"),
-                    (wp.calc(96.0) as i32, hp.calc(61.75) as i32),
+                    (wp.calc(96.0) as i32, (hp.calc(61.75) - 125.) as i32),
                     (font_type, font_size).into_font(),
                 ))?;
             }
             1 => {
                 drawing_areas[figure_number].draw(&Text::new(
                     format!("b-axis"),
-                    (wp.calc(left_margin) as i32, hp.calc(top_margin) as i32),
-                    (font_type, font_size).into_font(),
+                    (
+                        wp.calc(left_margin) as i32,
+                        hp.calc(top_margin + 1.0 * line_distance) as i32,
+                    ),
+                    (font_type, font_size, FontStyle::Bold).into_font(),
                 ))?;
                 drawing_areas[figure_number].draw(&Text::new(
-                    format!("max = {:.2}", max_count_value),
-                    (wp.calc(left_margin) as i32, hp.calc(top_margin+line_distance) as i32),
-                    (font_type, font_size).into_font(),
+                    format!("max={:.3}", max_count_value),
+                    (
+                        wp.calc(left_margin) as i32,
+                        hp.calc(top_margin + 0.0 * line_distance) as i32,
+                    ),
+                    (font_type, font_size, FontStyle::Bold).into_font(),
                 ))?;
                 drawing_areas[figure_number].draw(&Text::new(
                     format!("Z"),
-                    (wp.calc(46.4) as i32, hp.calc(top_margin+2.*line_distance) as i32),
+                    (wp.calc(46.4) as i32, (hp.calc(11.) - 85.) as i32),
                     (font_type, font_size).into_font(),
                 ))?;
                 drawing_areas[figure_number].draw(&Text::new(
                     format!("X"),
-                    (wp.calc(96.0) as i32, hp.calc(61.75) as i32),
+                    (wp.calc(96.0) as i32, (hp.calc(61.75) - 125.) as i32),
                     (font_type, font_size).into_font(),
                 ))?;
             }
             2 => {
                 drawing_areas[figure_number].draw(&Text::new(
                     format!("c-axis"),
-                    (wp.calc(left_margin) as i32, hp.calc(top_margin) as i32),
-                    (font_type, font_size).into_font(),
+                    (
+                        wp.calc(left_margin) as i32,
+                        hp.calc(top_margin + 1. * line_distance) as i32,
+                    ),
+                    (font_type, font_size, FontStyle::Bold).into_font(),
                 ))?;
                 drawing_areas[figure_number].draw(&Text::new(
-                    format!("max = {:.2}", max_count_value),
-                    (wp.calc(left_margin) as i32, hp.calc(top_margin+line_distance) as i32),
-                    (font_type, font_size).into_font(),
+                    format!("max={:.3}", max_count_value),
+                    (
+                        wp.calc(left_margin) as i32,
+                        hp.calc(top_margin + 0.0 * line_distance) as i32,
+                    ),
+                    (font_type, font_size, FontStyle::Bold).into_font(),
                 ))?;
+                //drawing_areas[figure_number]
+                //.draw(&Text::new(
+                //    format!("ani%={:.5}",((full_norm_square-isotropic)/full_norm_square)*100.),
+                //    ((wp.calc(left_margin+halfway_margin) ) as i32, hp.calc(top_margin + 0.0 * line_distance) as i32),
+                //    (font_type, font_size).into_font(),
+                //))?;
+                //drawing_areas[figure_number]
+                //.draw(&Text::new(
+                //    format!("hex%={:.3}:{:.3}",orth_perc_full[0],orth_perc_full[2]),
+                //    ((wp.calc(left_margin+halfway_margin) ) as i32, hp.calc(top_margin + 1.0 * line_distance) as i32),
+                //    (font_type, font_size).into_font(),
+                //))?;
+                //drawing_areas[figure_number]
+                //.draw(&Text::new(
+                //    format!("h/a%={:.3}:{:.3}",((orth_sorted[0])/(total_anisotropy))*100.,((orth_sorted[2])/(full_norm_square-isotropic))*100.),
+                //    ((wp.calc(left_margin+halfway_margin) ) as i32, hp.calc(top_margin + 2.0 * line_distance) as i32),
+                //    (font_type, font_size).into_font(),
+                //))?;
                 drawing_areas[figure_number].draw(&Text::new(
                     format!("Z"),
-                    (wp.calc(46.4) as i32, hp.calc(top_margin+2.*line_distance) as i32),
+                    (wp.calc(46.4) as i32, (hp.calc(11.) - 85.) as i32),
                     (font_type, font_size).into_font(),
                 ))?;
                 drawing_areas[figure_number].draw(&Text::new(
                     format!("X"),
-                    (wp.calc(96.0) as i32, hp.calc(61.75) as i32),
+                    (wp.calc(96.0) as i32, (hp.calc(61.75) - 125.) as i32),
                     (font_type, font_size).into_font(),
                 ))?;
             }
