@@ -48,7 +48,8 @@ struct Lambert {
 struct Config {
     base_dir: String,
     experiment_dirs: Vec<String>,
-    pole_figures: PoleFigures,
+    pole_figures: PoleFiguresConfiguration,
+    compressed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +59,9 @@ struct Record {
     olivine_Euler_angles_phi: Option<f64>,
     olivine_Euler_angles_theta: Option<f64>,
     olivine_Euler_angles_z: Option<f64>,
+    enstatite_Euler_angles_phi: Option<f64>,
+    enstatite_Euler_angles_theta: Option<f64>,
+    enstatite_Euler_angles_z: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,10 +92,17 @@ struct ParticleRecord {
 }
 
 #[derive(Deserialize)]
-struct PoleFigures {
+enum Mineral {
+    Olivine,
+    Enstatite,
+}
+
+#[derive(Deserialize)]
+struct PoleFiguresConfiguration {
     times: Vec<f64>,
     particle_ids: Vec<usize>,
     axes: Vec<LaticeAxes>,
+    minerals: Vec<Mineral>,
 }
 
 #[derive(StructOpt, Debug)]
@@ -103,6 +114,12 @@ struct Opt {
     // Output dir
     //#[structopt(short, long)]
     //input_dir: String,
+}
+
+struct PoleFigure {
+    mineral: Mineral,
+    latice_axis: LaticeAxes,
+    counts: Array2<f64>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -134,7 +151,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config: Config = toml::from_str(&config_file_string).unwrap();
 
-    println!("particle ids size {}", config.pole_figures.particle_ids.len());
+    println!(
+        "particle ids size {}",
+        config.pole_figures.particle_ids.len()
+    );
 
     let base_dir = config.base_dir.clone();
 
@@ -240,12 +260,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let file_particle_prefix = "particle_LPO/particles";
             //let time = 100;
             let mut rank_id = 0;
-            println!("particle ids size {}", config.pole_figures.particle_ids.len());
+            println!(
+                "particle ids size {}",
+                config.pole_figures.particle_ids.len()
+            );
             for particle_id in &config.pole_figures.particle_ids {
-                println!("processing particle_id {}",particle_id);
-                let mut Pva = Vec::new();
-                let mut Pvb = Vec::new();
-                let mut Pvc = Vec::new();
+                println!("processing particle_id {}", particle_id);
+                let mut particle_olivine_a_axis_vectors = Vec::new();
+                let mut particle_olivine_b_axis_vectors = Vec::new();
+                let mut particle_olivine_c_axis_vectors = Vec::new();
+                //let mut particle_enstatite_a_axis_vectors = Vec::new();
+                //let mut particle_enstatite_b_axis_vectors = Vec::new();
+                //let mut particle_enstatite_c_axis_vectors = Vec::new();
+
                 let mut file_found: bool = false;
                 while !file_found {
                     let angles_file = format!(
@@ -284,29 +311,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     println!("  file:{}", angles_file.display());
                     let file = File::open(angles_file).unwrap();
+                    let metadata = file.metadata().unwrap();
+                    
+                    let mut buf_reader = BufReader::with_capacity(metadata.len() as usize,file);
+                    //let mut buf_reader = BufReader::new(file);
 
-                    let buf_reader = BufReader::new(file);
+                    let mut decoded_data = Vec::new();
 
-                    let compressed = false;
-                     
+                    let compressed = config.compressed;
+
                     //if compressed {
-                        // decoding if needed
-                        let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
-                        let mut decoded_data = Vec::new();
-                        decoder.read_to_end(&mut decoded_data).unwrap();
-                        let decoded_string = String::from_utf8_lossy(&decoded_data);
-                        // end decoding if needed
-                        let mut rdr =csv::ReaderBuilder::new()
-                            .has_headers(true)
-                            .delimiter(b' ')
-                            .from_reader(decoded_string.as_bytes());
-                    //} else {
-                    //    let mut rdr =csv::ReaderBuilder::new()
-                    //        .has_headers(true)
-                    //        .delimiter(b' ')
-                    //        .from_reader(buf_reader)
+                    //    //let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
+                    //    //decoder.read_to_end(&mut decoded_data).unwrap();
                     //}
-                    ;
+                    //else {
+                    //    decoded_data = buf_reader.buffer();
+                    //}
+
+                    let decoded_reader = if compressed 
+                    {
+                        //    // decoding if needed
+                        //    let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
+                        //    let mut decoded_data = Vec::new();
+                        //    decoder.read_to_end(&mut decoded_data).unwrap();
+                        let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
+                        decoder.read_to_end(&mut decoded_data).unwrap();//;
+                        //decoder.into_inner()
+                        //BufReader::new(String::from_utf8_lossy(&mut decoded_data.as_bytes()))
+                        String::from_utf8_lossy(&decoded_data)
+                    } else {
+                        let data = buf_reader.fill_buf().unwrap();
+                        String::from_utf8_lossy(&data)
+                    };
+
+                    let mut rdr = 
+                    //if compressed {
+                        csv::ReaderBuilder::new()
+                        .has_headers(true)
+                        .delimiter(b' ')
+                        .from_reader(decoded_reader.as_bytes())
+                    //} else {
+                    //    csv::ReaderBuilder::new()
+                    //    .has_headers(true)
+                    //    .delimiter(b' ')
+                    //    .from_reader(buf_reader)
+                    //}
+                        ;
+
+                    //let mut rdr =
+                    //csv::ReaderBuilder::new()
+                    //    .has_headers(true)
+                    //    .delimiter(b' ')
+                    //    .from_reader(decoded_string.as_bytes()).deserialize()
+                    //};
 
                     //// decoding if needed
                     //let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
@@ -328,8 +385,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     //type Record = (u64, f64, f64, f64, f64);
 
                     //let Record_array = Record.into()
-
+                    let mut integer = 0;
+                    //println!("counter = {}, {:?}", integer, rdr);
                     for result in rdr.deserialize() {
+                        //println!("counter = {}, {:?}", integer, result);
                         // We must tell Serde what type we want to deserialize into.
                         let record: Record = result.unwrap();
                         if record.id == *particle_id {
@@ -341,14 +400,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )
                             .unwrap();
 
-                            Pva.push(dcm.row(0).to_owned());
-                            Pvb.push(dcm.row(1).to_owned());
-                            Pvc.push(dcm.row(2).to_owned());
+                            particle_olivine_a_axis_vectors.push(dcm.row(0).to_owned());
+                            particle_olivine_b_axis_vectors.push(dcm.row(1).to_owned());
+                            particle_olivine_c_axis_vectors.push(dcm.row(2).to_owned());
                         }
+
+                        //println!("counter = {}, id = {}, ophi = {}", integer, record.id, record.olivine_Euler_angles_phi.unwrap());
+                        integer = integer + 1;
                     }
 
                     // check if the particle id was found in this file, otherwise continue
-                    if Pva.len() == 0 {
+                    if particle_olivine_a_axis_vectors.len() == 0 {
                         rank_id = rank_id + 1;
                         continue;
                     }
@@ -415,16 +477,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // end retrieve anisotropy info
 
                     let sphere_points = 151;
-                    let n_grains = Pva.len();
+                    let n_grains = particle_olivine_a_axis_vectors.len();
 
-                    let mut Pa = Array2::zeros((n_grains, 3));
-                    let mut Pb = Array2::zeros((n_grains, 3));
-                    let mut Pc = Array2::zeros((n_grains, 3));
+                    let mut particle_olivine_a_axis_arrays = Array2::zeros((n_grains, 3)); // Pa
+                    let mut particle_olivine_b_axis_arrays = Array2::zeros((n_grains, 3)); // Pb
+                    let mut particle_olivine_c_axis_arrays = Array2::zeros((n_grains, 3)); // Pc
                     for i in 0..n_grains {
                         for j in 0..3 {
-                            Pa[[i, j]] = Pva[i][j];
-                            Pb[[i, j]] = Pvb[i][j];
-                            Pc[[i, j]] = Pvc[i][j];
+                            particle_olivine_a_axis_arrays[[i, j]] =
+                                particle_olivine_a_axis_vectors[i][j];
+                            particle_olivine_b_axis_arrays[[i, j]] =
+                                particle_olivine_b_axis_vectors[i][j];
+                            particle_olivine_c_axis_arrays[[i, j]] =
+                                particle_olivine_c_axis_vectors[i][j];
                         }
                     }
 
@@ -440,20 +505,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
-                    let countsA = gaussian_orientation_counts(&Pa, &S, sphere_points).unwrap();
-                    let countsB = gaussian_orientation_counts(&Pb, &S, sphere_points).unwrap();
-                    let countsC = gaussian_orientation_counts(&Pc, &S, sphere_points).unwrap();
+                    let counts_olivine_a_axis = gaussian_orientation_counts(
+                        &particle_olivine_a_axis_arrays,
+                        &S,
+                        sphere_points,
+                    )
+                    .unwrap();
+                    let counts_olivine_b_axis = gaussian_orientation_counts(
+                        &particle_olivine_b_axis_arrays,
+                        &S,
+                        sphere_points,
+                    )
+                    .unwrap();
+                    let counts_olivine_c_axis = gaussian_orientation_counts(
+                        &particle_olivine_c_axis_arrays,
+                        &S,
+                        sphere_points,
+                    )
+                    .unwrap();
                     println!(
                         "  Before make_polefigures: Elapsed time: {:.2?}",
                         before.elapsed()
                     );
+
                     make_polefigures(
                         n_grains,
                         &time_step,
                         0,
-                        &countsA,
-                        &countsB,
-                        &countsC,
+                        &counts_olivine_a_axis,
+                        &counts_olivine_b_axis,
+                        &counts_olivine_c_axis,
                         &lambert,
                         output_file,
                         &particle_record,
@@ -480,16 +561,16 @@ fn dir_cos_matrix2(
 ) -> Result<Array2<f64>, Box<dyn std::error::Error>> {
     let mut dcm: Array2<f64> = Array::zeros((3, 3));
 
-    dcm[[0, 0]] = ((phi2.cos()) * (phi1.cos())) - ((theta.cos()) * (phi1.sin()) * (phi2.sin()));
-    dcm[[0, 1]] = phi2.cos() * phi1.sin() + theta.cos() * phi1.cos() * phi2.sin();
-    dcm[[0, 2]] = phi2.sin() * theta.sin();
+    dcm[[0, 0]] = phi2.cos() * phi1.cos() - theta.cos() * phi1.sin() * phi2.sin();
+    dcm[[0, 1]] = -phi2.cos() * phi1.sin() - theta.cos() * phi1.cos() * phi2.sin();
+    dcm[[0, 2]] = -phi2.sin() * theta.sin();
 
-    dcm[[1, 0]] = -1.0 * phi2.sin() * phi1.cos() - theta.cos() * phi1.sin() * phi2.cos();
-    dcm[[1, 1]] = -1.0 * phi2.sin() * phi1.sin() + theta.cos() * phi1.cos() * phi2.cos();
+    dcm[[1, 0]] = phi2.sin() * phi1.cos() + theta.cos() * phi1.sin() * phi2.cos();
+    dcm[[1, 1]] = -phi2.sin() * phi1.sin() + theta.cos() * phi1.cos() * phi2.cos();
     dcm[[1, 2]] = phi2.cos() * theta.sin();
 
-    dcm[[2, 0]] = theta.sin() * phi1.sin();
-    dcm[[2, 1]] = -1.0 * theta.sin() * phi1.cos();
+    dcm[[2, 0]] = -theta.sin() * phi1.sin();
+    dcm[[2, 1]] = -theta.sin() * phi1.cos();
     dcm[[2, 2]] = theta.cos();
 
     Ok(dcm)
