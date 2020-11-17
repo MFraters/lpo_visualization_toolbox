@@ -16,7 +16,6 @@ use ndarray::prelude::*;
 use palette::{Gradient, LinSrgb};
 use plotters::prelude::*;
 use rayon::prelude::*;
-use std::error::Error;
 use std::io::prelude::*;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -25,7 +24,7 @@ use structopt::StructOpt;
 use serde_derive::{Deserialize, Serialize};
 //use serde::{Serialize, Deserialize};
 
-use std::io::{self, prelude::*, BufReader, BufWriter};
+use std::io::{BufReader};
 
 #[derive(Serialize, Deserialize, Debug)]
 enum LaticeAxes {
@@ -36,9 +35,9 @@ enum LaticeAxes {
 
 #[derive(Debug)]
 struct Lambert {
-    X: Array<f64, Dim<[usize; 2]>>,
-    Z: Array<f64, Dim<[usize; 2]>>,
-    R: f64,
+    x_plane: Array<f64, Dim<[usize; 2]>>,
+    z_plane: Array<f64, Dim<[usize; 2]>>,
+    r_plane: f64,
     x: Array<f64, Dim<[usize; 2]>>,
     y: Array<f64, Dim<[usize; 2]>>,
     z: Array<f64, Dim<[usize; 2]>>,
@@ -56,12 +55,12 @@ struct Config {
 //#[serde(rename_all = "PascalCase")]
 struct Record {
     id: usize,
-    olivine_Euler_angles_phi: Option<f64>,
-    olivine_Euler_angles_theta: Option<f64>,
-    olivine_Euler_angles_z: Option<f64>,
-    enstatite_Euler_angles_phi: Option<f64>,
-    enstatite_Euler_angles_theta: Option<f64>,
-    enstatite_Euler_angles_z: Option<f64>,
+    olivine_euler_angles_phi: Option<f64>,
+    olivine_euler_angles_theta: Option<f64>,
+    olivine_euler_angles_z: Option<f64>,
+    enstatite_euler_angles_phi: Option<f64>,
+    enstatite_euler_angles_theta: Option<f64>,
+    enstatite_euler_angles_z: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(why) => panic!(
             "couldn't open {}: {}",
             config_file_display,
-            why.description()
+            why.to_string()
         ),
         Ok(file) => file,
     };
@@ -144,7 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(why) => panic!(
             "couldn't read {}: {}",
             config_file_display,
-            why.description()
+            why.to_string()
         ),
         Ok(_) => (),
     }
@@ -230,18 +229,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 before_timestep = after_timestep - 1
             }
 
-            let mut time_step: u64 = 0;
-
             // check wheter before_timestep or after_timestep is closer to output_time,
             // then use that one.
             let before_timestep_diff = (output_time - timestep_to_time[before_timestep]).abs();
             let after_timestep_diff = (output_time - timestep_to_time[after_timestep]).abs();
 
-            if before_timestep_diff < after_timestep_diff {
-                time_step = before_timestep as u64;
+            let time_step = if before_timestep_diff < after_timestep_diff {
+                before_timestep as u64
             } else {
-                time_step = after_timestep as u64;
-            }
+                after_timestep as u64
+            };
 
             let time = timestep_to_time[time_step as usize];
 
@@ -258,7 +255,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let file_prefix = "particle_LPO/weighted_LPO";
             let file_particle_prefix = "particle_LPO/particles";
-            //let time = 100;
             let mut rank_id = 0;
             println!(
                 "particle ids size {}",
@@ -299,7 +295,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "particle id {} not found for timestep {}.",
                             particle_id, time_step
                         );
-                        file_found = false;
                         break;
                     }
 
@@ -339,9 +334,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if record.id == *particle_id {
                             let deg_to_rad = std::f64::consts::PI / 180.;
                             let dcm = dir_cos_matrix2(
-                                record.olivine_Euler_angles_phi.unwrap() * deg_to_rad,
-                                record.olivine_Euler_angles_theta.unwrap() * deg_to_rad,
-                                record.olivine_Euler_angles_z.unwrap() * deg_to_rad,
+                                record.olivine_euler_angles_phi.unwrap() * deg_to_rad,
+                                record.olivine_euler_angles_theta.unwrap() * deg_to_rad,
+                                record.olivine_euler_angles_z.unwrap() * deg_to_rad,
                             )
                             .unwrap();
 
@@ -419,32 +414,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     let lambert =
-                        create_lambertEA_gridpoint(sphere_points, "upper".to_string()).unwrap();
-                    let mut S = Array2::zeros((3, sphere_points * sphere_points));
+                        create_lambert_equal_area_gridpoint(sphere_points, "upper".to_string()).unwrap();
+                    let mut sphere_point_grid = Array2::zeros((3, sphere_points * sphere_points));
 
                     for i in 0..sphere_points {
                         for j in 0..sphere_points {
-                            S[[0, i * sphere_points + j]] = lambert.x[[i, j]];
-                            S[[1, i * sphere_points + j]] = lambert.y[[i, j]];
-                            S[[2, i * sphere_points + j]] = lambert.z[[i, j]];
+                            sphere_point_grid[[0, i * sphere_points + j]] = lambert.x[[i, j]];
+                            sphere_point_grid[[1, i * sphere_points + j]] = lambert.y[[i, j]];
+                            sphere_point_grid[[2, i * sphere_points + j]] = lambert.z[[i, j]];
                         }
                     }
 
                     let counts_olivine_a_axis = gaussian_orientation_counts(
                         &particle_olivine_a_axis_arrays,
-                        &S,
+                        &sphere_point_grid,
                         sphere_points,
                     )
                     .unwrap();
                     let counts_olivine_b_axis = gaussian_orientation_counts(
                         &particle_olivine_b_axis_arrays,
-                        &S,
+                        &sphere_point_grid,
                         sphere_points,
                     )
                     .unwrap();
                     let counts_olivine_c_axis = gaussian_orientation_counts(
                         &particle_olivine_c_axis_arrays,
-                        &S,
+                        &sphere_point_grid,
                         sphere_points,
                     )
                     .unwrap();
@@ -506,11 +501,11 @@ fn dir_cos_matrix2(
 // using contouring circles and continuous weighting functions
 
 fn gaussian_orientation_counts(
-    P: &Array2<f64>,
-    S: &Array2<f64>,
+    particles: &Array2<f64>,
+    sphere_point_grid: &Array2<f64>,
     sphere_points: usize,
 ) -> Result<Array2<f64>, Box<dyn std::error::Error>> {
-    let npts = P.shape()[0];
+    let npts = particles.shape()[0];
 
     // Choose k, which defines width of spherical gaussian  (table 3)
     let k = 2. * (1. + npts as f64 / 9.);
@@ -519,7 +514,7 @@ fn gaussian_orientation_counts(
     let std_dev = ((npts as f64 * (k as f64 / 2. - 1.) / (k * k)) as f64).sqrt();
 
     // Calculate dot product
-    let mut cosalpha = P.dot(S);
+    let mut cosalpha = particles.dot(sphere_point_grid);
 
     // Calculate the counts from the spherical gaussian
     //let counts = Array::zeros(cosalpha.shape());
@@ -541,12 +536,12 @@ fn gaussian_orientation_counts(
 
 fn make_polefigures(
     n_grains: usize,
-    time_step: &u64,
+    _time_step: &u64,
     particle_id: u64,
-    countsA: &Array2<f64>,
-    countsB: &Array2<f64>,
-    countsC: &Array2<f64>,
-    Lambert: &Lambert,
+    counts_a: &Array2<f64>,
+    counts_b: &Array2<f64>,
+    counts_c: &Array2<f64>,
+    lambert: &Lambert,
     output_file: &Path,
     particle_record: &ParticleRecord,
     time: f64,
@@ -569,26 +564,26 @@ fn make_polefigures(
     ]);
 
     let mut counts = Vec::new();
-    counts.push(countsA);
-    counts.push(countsB);
-    counts.push(countsC);
+    counts.push(counts_a);
+    counts.push(counts_b);
+    counts.push(counts_c);
     // Grid of points is a square and it extends outside the pole figure circumference.
     // Create mask to only plot color and contours within the pole figure
-    let mut mask = Lambert.X.clone();
+    let mut mask = lambert.x_plane.clone();
 
     let mut circle_path: Vec<(f64, f64)> = Vec::new();
     Zip::from(&mut mask)
-        .and(&Lambert.X)
-        .and(&Lambert.Z)
+        .and(&lambert.x_plane)
+        .and(&lambert.z_plane)
         .par_apply(|a, x, z| {
             let radius = (x * x + z * z).sqrt();
-            if radius >= Lambert.R + 0.001 {
+            if radius >= lambert.r_plane + 0.001 {
                 *a = std::f64::NAN
             } else {
                 *a = 1.
             }
         });
-    let npts = countsA.shape()[0];
+    let npts = counts_a.shape()[0];
 
     // Create a boundary circle for the Schmidt Net
     let bd_theta = Array::linspace(0., 2. * std::f64::consts::PI, 100);
@@ -609,13 +604,13 @@ fn make_polefigures(
     let mut have_aplot = 0;
     let mut have_bplot = 0;
     let mut have_cplot = 0;
-    if countsA.len() > 1 {
+    if counts_a.len() > 1 {
         have_aplot = 1;
     }
-    if countsB.len() > 1 {
+    if counts_b.len() > 1 {
         have_bplot = 1;
     }
-    if countsC.len() > 1 {
+    if counts_c.len() > 1 {
         have_cplot = 1;
     }
 
@@ -687,7 +682,7 @@ fn make_polefigures(
     hexa_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let tric_perc_full = tric_unsorted
-        .into_iter()
+        .iter()
         .map(|v| (v / full_norm_square) * 100.)
         .collect::<Vec<f64>>();
     let mono_perc_full = mono_unsorted
@@ -718,12 +713,12 @@ fn make_polefigures(
     let line_distance = 5.5; //6.;//5.5;
     let top_margin = 0.25;
     let left_margin = 0.5;
-    let halfway_margin = 52.5; //.;
+    //let halfway_margin = 52.5; //.;
     let font_type = "Inconsolata"; //"consolas";//"sans-serif"
 
     upper
         .draw(&Text::new(
-            format!("time={:.5e}, position=({:.3e}:{:.3e}:{:.3e}), ODT={:.4}, grains={}, anisotropic%={:.4}",time,particle_record.x,particle_record.y,particle_record.z.unwrap(),particle_record.olivine_deformation_type, n_grains,((total_anisotropy)/full_norm_square)*100.),
+            format!("id={},time={:.5e}, position=({:.3e}:{:.3e}:{:.3e}), ODT={:.4}, grains={}, anisotropic%={:.4}",particle_id,time,particle_record.x,particle_record.y,particle_record.z.unwrap(),particle_record.olivine_deformation_type, n_grains,((total_anisotropy)/full_norm_square)*100.),
             ((wp.calc(left_margin) ) as i32, hp.calc(top_margin) as i32),
             (font_type, font_size).into_font(),
         ))?;
@@ -852,17 +847,17 @@ fn make_polefigures(
     // do stuff in lower:
 
     let font_size = 45;
-    let (left, right) = lower.split_horizontally(figure_width);
+    let (left, _right) = lower.split_horizontally(figure_width);
     let drawing_areas = left.split_evenly((1, number_of_figures));
 
     println!("    number of figures = {}", number_of_figures);
     for figure_number in 0..number_of_figures {
         let mut chart = ChartBuilder::on(&drawing_areas[figure_number]).build_ranged(
-            -Lambert.R - 0.05..Lambert.R + 0.15,
-            -Lambert.R - 0.05..Lambert.R + 0.15,
+            -lambert.r_plane - 0.05..lambert.r_plane + 0.15,
+            -lambert.r_plane - 0.05..lambert.r_plane + 0.15,
         )?;
 
-        // get max valuein countsA
+        // get max valuein counts_a
         let mut max_count_value = 0.0;
         for i in 0..npts - 1 {
             for j in 0..npts - 1 {
@@ -877,10 +872,10 @@ fn make_polefigures(
             let mut current_i: Vec<Vec<(f64, f64)>> = Vec::new();
             for j in 0..npts - 1 {
                 current_i.push(vec![
-                    (Lambert.X[[i + 1, j]], Lambert.Z[[i + 1, j]]),
-                    (Lambert.X[[i + 1, j + 1]], Lambert.Z[[i + 1, j + 1]]),
-                    (Lambert.X[[i, j + 1]], Lambert.Z[[i, j + 1]]),
-                    (Lambert.X[[i, j]], Lambert.Z[[i, j]]),
+                    (lambert.x_plane[[i + 1, j]], lambert.z_plane[[i + 1, j]]),
+                    (lambert.x_plane[[i + 1, j + 1]], lambert.z_plane[[i + 1, j + 1]]),
+                    (lambert.x_plane[[i, j + 1]], lambert.z_plane[[i, j + 1]]),
+                    (lambert.x_plane[[i, j]], lambert.z_plane[[i, j]]),
                 ]);
             }
             current.push(current_i);
@@ -1089,16 +1084,16 @@ impl Percentage {
 }
 
 fn create_meshgrid(
-    X: &Array<f64, Dim<[usize; 1]>>,
-    Y: &Array<f64, Dim<[usize; 1]>>,
+    x_plane: &Array<f64, Dim<[usize; 1]>>,
+    y_plane: &Array<f64, Dim<[usize; 1]>>,
 ) -> Result<(Array<f64, Dim<[usize; 2]>>, Array<f64, Dim<[usize; 2]>>), Box<dyn std::error::Error>>
 {
-    let mut new_x: Array<f64, Dim<[usize; 2]>> = Array::zeros([X.len(), Y.len()]);
-    let mut new_y: Array<f64, Dim<[usize; 2]>> = Array::zeros([X.len(), Y.len()]);
+    let mut new_x: Array<f64, Dim<[usize; 2]>> = Array::zeros([x_plane.len(), y_plane.len()]);
+    let mut new_y: Array<f64, Dim<[usize; 2]>> = Array::zeros([x_plane.len(), y_plane.len()]);
     let mut counter = 0;
-    let max_count = X.len();
+    let max_count = x_plane.len();
     for value in new_x.iter_mut() {
-        *value = X[counter];
+        *value = x_plane[counter];
         counter += 1;
         if counter >= max_count {
             counter = 0;
@@ -1108,7 +1103,7 @@ fn create_meshgrid(
     counter = 0;
     let mut counter_y = 0;
     for value in new_y.iter_mut() {
-        *value = Y[counter];
+        *value = y_plane[counter];
         counter_y += 1;
         if counter_y >= max_count {
             counter_y = 0;
@@ -1129,24 +1124,24 @@ fn create_meshgrid(
 * you can get X,Y on the lambert projection to plot these as a scatter plot
 * without ever converting the spherical coordinates
 */
-fn create_lambertEA_gridpoint(
+fn create_lambert_equal_area_gridpoint(
     sphere_points: usize,
     hemisphere: String,
 ) -> Result<Lambert, Box<dyn std::error::Error>> {
     // Create a grid of points at increasing radius in the X and Y direction
     // Use the coordinate X,Y,R to plot these points on the lambert projection
-    let R: f64 = 2.0_f64.sqrt(); // need this to get full sphere in Lambert projection)
-    let X = Array::linspace(-R, R, sphere_points);
-    //println!("X={}", X);
-    let Y = X.clone();
-    let (X, mut Z) = create_meshgrid(&X, &Y)?;
-    //println!("X={}", X);
-    //println!("Z={}", Z);
-    Z.invert_axis(Axis(0));
-    //println!("Z={}", Z);
-    //let mut Y = Y.into_raw_vec();
-    //Y.reverse();
-    //let Y: Array<f64, Dim<[usize; 2]>> = Array::from(Y); // Y increases up
+    let r_plane: f64 = 2.0_f64.sqrt(); // need this to get full sphere in Lambert projection)
+    let x_plane = Array::linspace(-r_plane, r_plane, sphere_points);
+    //println!("x_plane={}", x_plane);
+    let y_plane = x_plane.clone();
+    let (x_plane, mut z_plane) = create_meshgrid(&x_plane, &y_plane)?;
+    //println!("x_plane={}", x_plane);
+    //println!("z_plane={}", z_plane);
+    z_plane.invert_axis(Axis(0));
+    //println!("z_plane={}", z_plane);
+    //let mut y_plane = y_plane.into_raw_vec();
+    //y_plane.reverse();
+    //let y_plane: Array<f64, Dim<[usize; 2]>> = Array::from(y_plane); // y_plane increases up
 
     // map onto lambert projection, assumes r = 1?
     // added np.abs to avoid tiny negative numbers in sqrt
@@ -1156,37 +1151,37 @@ fn create_lambertEA_gridpoint(
     let mut z = Array::zeros([sphere_points, sphere_points]);
     let mut mag = Array::zeros([sphere_points, sphere_points]);
 
-    Zip::from(&mut x).and(&X).and(&Z).par_apply(|a, &X, &Z| {
-        *a = if 1. - (X * X + Z * Z) / 4. > std::f64::EPSILON {
-            ((1. - (X * X + Z * Z) / 4.).abs()).sqrt() * X
+    Zip::from(&mut x).and(&x_plane).and(&z_plane).par_apply(|a, &x_plane, &z_plane| {
+        *a = if 1. - (x_plane * x_plane + z_plane * z_plane) / 4. > std::f64::EPSILON {
+            ((1. - (x_plane * x_plane + z_plane * z_plane) / 4.).abs()).sqrt() * x_plane
         } else {
             0.
         };
     });
 
     if hemisphere == "lower" {
-        Zip::from(&mut y).and(&X).and(&Z).par_apply(|a, &X, &Z| {
-            *a = -(1. - (X * X + Z * Z) / 2.);
+        Zip::from(&mut y).and(&x_plane).and(&z_plane).par_apply(|a, &x_plane, &z_plane| {
+            *a = -(1. - (x_plane * x_plane + z_plane * z_plane) / 2.);
         });
-        Zip::from(&mut z).and(&X).and(&Z).par_apply(|a, &X, &Z| {
-            *a = ((1. - (X * X + Z * Z) / 4.).abs()).sqrt() * (-Z);
+        Zip::from(&mut z).and(&x_plane).and(&z_plane).par_apply(|a, &x_plane, &z_plane| {
+            *a = ((1. - (x_plane * x_plane + z_plane * z_plane) / 4.).abs()).sqrt() * (-z_plane);
         });
     } else if hemisphere == "upper" {
-        Zip::from(&mut y).and(&X).and(&Z).par_apply(|a, &X, &Z| {
-            *a = 1. - (X * X + Z * Z) / 2.;
+        Zip::from(&mut y).and(&x_plane).and(&z_plane).par_apply(|a, &x_plane, &z_plane| {
+            *a = 1. - (x_plane * x_plane + z_plane * z_plane) / 2.;
         });
-        Zip::from(&mut z).and(&X).and(&Z).par_apply(|a, &X, &Z| {
-            *a = ((1. - (X * X + Z * Z) / 4.).abs()).sqrt() * Z;
+        Zip::from(&mut z).and(&x_plane).and(&z_plane).par_apply(|a, &x_plane, &z_plane| {
+            *a = ((1. - (x_plane * x_plane + z_plane * z_plane) / 4.).abs()).sqrt() * z_plane;
         });
     };
 
     /*if hemisphere == "lower" {
-        Zip::from(&mut z).and(&X).and(&Y).apply(|a, &X, &Y| {
-            *a = -(1. - (X * X + Y * X) / 2.);
+        Zip::from(&mut z).and(&x_plane).and(&y_plane).apply(|a, &x_plane, &y_plane| {
+            *a = -(1. - (x_plane * x_plane + y_plane * x_plane) / 2.);
         });
     } else if hemisphere == "upper" {
-        Zip::from(&mut z).and(&X).and(&Y).apply(|a, &X, &Y| {
-            *a = 1. - (X * X + Y * Y) / 2.;
+        Zip::from(&mut z).and(&x_plane).and(&y_plane).apply(|a, &x_plane, &y_plane| {
+            *a = 1. - (x_plane * x_plane + y_plane * y_plane) / 2.;
         });
     };*/
     /*println!("");
@@ -1209,8 +1204,8 @@ fn create_lambertEA_gridpoint(
     #        it looks to me that this is never used.
     */
 
-    //x[1-(X**2 + Y**2)/4 < np.finfo(float).eps] = 0;
-    //y[1-(X**2 + Y**2)/4 < np.finfo(float).eps] = 0;
+    //x[1-(x_plane**2 + y_plane**2)/4 < np.finfo(float).eps] = 0;
+    //y[1-(x_plane**2 + y_plane**2)/4 < np.finfo(float).eps] = 0;
 
     // ensure unit vectors
     // Use these values of x,y,z to calculate the gaussian weighting function for contouring
@@ -1237,9 +1232,9 @@ fn create_lambertEA_gridpoint(
     println!("=================================2==================================");
     println!("");*/
     Ok(Lambert {
-        X: X,
-        Z: Z,
-        R: R,
+        x_plane: x_plane,
+        z_plane: z_plane,
+        r_plane: r_plane,
         x: x,
         y: y,
         z: z,
