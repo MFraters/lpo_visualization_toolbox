@@ -24,7 +24,7 @@ use structopt::StructOpt;
 use serde_derive::{Deserialize, Serialize};
 //use serde::{Serialize, Deserialize};
 
-use std::io::{BufReader};
+use std::io::BufReader;
 
 #[derive(Serialize, Deserialize, Debug)]
 enum LaticeAxes {
@@ -130,21 +130,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut file = match File::open(&config_file) {
         // The `description` method of `io::Error` returns a string that
         // describes the error
-        Err(why) => panic!(
-            "couldn't open {}: {}",
-            config_file_display,
-            why.to_string()
-        ),
+        Err(why) => panic!("couldn't open {}: {}", config_file_display, why.to_string()),
         Ok(file) => file,
     };
     // Read the file contents into a string, returns `io::Result<usize>`
     let mut config_file_string = String::new();
     match file.read_to_string(&mut config_file_string) {
-        Err(why) => panic!(
-            "couldn't read {}: {}",
-            config_file_display,
-            why.to_string()
-        ),
+        Err(why) => panic!("couldn't read {}: {}", config_file_display, why.to_string()),
         Ok(_) => (),
     }
 
@@ -414,7 +406,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     let lambert =
-                        create_lambert_equal_area_gridpoint(sphere_points, "upper".to_string()).unwrap();
+                        create_lambert_equal_area_gridpoint(sphere_points, "upper".to_string())
+                            .unwrap();
                     let mut sphere_point_grid = Array2::zeros((3, sphere_points * sphere_points));
 
                     for i in 0..sphere_points {
@@ -873,7 +866,10 @@ fn make_polefigures(
             for j in 0..npts - 1 {
                 current_i.push(vec![
                     (lambert.x_plane[[i + 1, j]], lambert.z_plane[[i + 1, j]]),
-                    (lambert.x_plane[[i + 1, j + 1]], lambert.z_plane[[i + 1, j + 1]]),
+                    (
+                        lambert.x_plane[[i + 1, j + 1]],
+                        lambert.z_plane[[i + 1, j + 1]],
+                    ),
                     (lambert.x_plane[[i, j + 1]], lambert.z_plane[[i, j + 1]]),
                     (lambert.x_plane[[i, j]], lambert.z_plane[[i, j]]),
                 ]);
@@ -1151,28 +1147,44 @@ fn create_lambert_equal_area_gridpoint(
     let mut z = Array::zeros([sphere_points, sphere_points]);
     let mut mag = Array::zeros([sphere_points, sphere_points]);
 
-    Zip::from(&mut x).and(&x_plane).and(&z_plane).par_apply(|a, &x_plane, &z_plane| {
-        *a = if 1. - (x_plane * x_plane + z_plane * z_plane) / 4. > std::f64::EPSILON {
-            ((1. - (x_plane * x_plane + z_plane * z_plane) / 4.).abs()).sqrt() * x_plane
-        } else {
-            0.
-        };
-    });
+    Zip::from(&mut x)
+        .and(&x_plane)
+        .and(&z_plane)
+        .par_apply(|a, &x_plane, &z_plane| {
+            *a = if 1. - (x_plane * x_plane + z_plane * z_plane) / 4. > std::f64::EPSILON {
+                ((1. - (x_plane * x_plane + z_plane * z_plane) / 4.).abs()).sqrt() * x_plane
+            } else {
+                0.
+            };
+        });
 
     if hemisphere == "lower" {
-        Zip::from(&mut y).and(&x_plane).and(&z_plane).par_apply(|a, &x_plane, &z_plane| {
-            *a = -(1. - (x_plane * x_plane + z_plane * z_plane) / 2.);
-        });
-        Zip::from(&mut z).and(&x_plane).and(&z_plane).par_apply(|a, &x_plane, &z_plane| {
-            *a = ((1. - (x_plane * x_plane + z_plane * z_plane) / 4.).abs()).sqrt() * (-z_plane);
-        });
+        Zip::from(&mut y)
+            .and(&x_plane)
+            .and(&z_plane)
+            .par_apply(|a, &x_plane, &z_plane| {
+                *a = -(1. - (x_plane * x_plane + z_plane * z_plane) / 2.);
+            });
+        Zip::from(&mut z)
+            .and(&x_plane)
+            .and(&z_plane)
+            .par_apply(|a, &x_plane, &z_plane| {
+                *a =
+                    ((1. - (x_plane * x_plane + z_plane * z_plane) / 4.).abs()).sqrt() * (-z_plane);
+            });
     } else if hemisphere == "upper" {
-        Zip::from(&mut y).and(&x_plane).and(&z_plane).par_apply(|a, &x_plane, &z_plane| {
-            *a = 1. - (x_plane * x_plane + z_plane * z_plane) / 2.;
-        });
-        Zip::from(&mut z).and(&x_plane).and(&z_plane).par_apply(|a, &x_plane, &z_plane| {
-            *a = ((1. - (x_plane * x_plane + z_plane * z_plane) / 4.).abs()).sqrt() * z_plane;
-        });
+        Zip::from(&mut y)
+            .and(&x_plane)
+            .and(&z_plane)
+            .par_apply(|a, &x_plane, &z_plane| {
+                *a = 1. - (x_plane * x_plane + z_plane * z_plane) / 2.;
+            });
+        Zip::from(&mut z)
+            .and(&x_plane)
+            .and(&z_plane)
+            .par_apply(|a, &x_plane, &z_plane| {
+                *a = ((1. - (x_plane * x_plane + z_plane * z_plane) / 4.).abs()).sqrt() * z_plane;
+            });
     };
 
     /*if hemisphere == "lower" {
