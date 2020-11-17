@@ -312,84 +312,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  file:{}", angles_file.display());
                     let file = File::open(angles_file).unwrap();
                     let metadata = file.metadata().unwrap();
-                    
-                    let mut buf_reader = BufReader::with_capacity(metadata.len() as usize,file);
+
+                    let mut buf_reader = BufReader::with_capacity(metadata.len() as usize, file);
                     //let mut buf_reader = BufReader::new(file);
 
                     let mut decoded_data = Vec::new();
 
                     let compressed = config.compressed;
 
-                    //if compressed {
-                    //    //let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
-                    //    //decoder.read_to_end(&mut decoded_data).unwrap();
-                    //}
-                    //else {
-                    //    decoded_data = buf_reader.buffer();
-                    //}
-
-                    let decoded_reader = if compressed 
-                    {
-                        //    // decoding if needed
-                        //    let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
-                        //    let mut decoded_data = Vec::new();
-                        //    decoder.read_to_end(&mut decoded_data).unwrap();
+                    let decoded_reader = if compressed {
                         let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
-                        decoder.read_to_end(&mut decoded_data).unwrap();//;
-                        //decoder.into_inner()
-                        //BufReader::new(String::from_utf8_lossy(&mut decoded_data.as_bytes()))
+                        decoder.read_to_end(&mut decoded_data).unwrap();
                         String::from_utf8_lossy(&decoded_data)
                     } else {
                         let data = buf_reader.fill_buf().unwrap();
                         String::from_utf8_lossy(&data)
                     };
 
-                    let mut rdr = 
-                    //if compressed {
-                        csv::ReaderBuilder::new()
+                    let mut rdr = csv::ReaderBuilder::new()
                         .has_headers(true)
                         .delimiter(b' ')
-                        .from_reader(decoded_reader.as_bytes())
-                    //} else {
-                    //    csv::ReaderBuilder::new()
-                    //    .has_headers(true)
-                    //    .delimiter(b' ')
-                    //    .from_reader(buf_reader)
-                    //}
-                        ;
+                        .from_reader(decoded_reader.as_bytes());
 
-                    //let mut rdr =
-                    //csv::ReaderBuilder::new()
-                    //    .has_headers(true)
-                    //    .delimiter(b' ')
-                    //    .from_reader(decoded_string.as_bytes()).deserialize()
-                    //};
-
-                    //// decoding if needed
-                    //let mut decoder = libflate::zlib::Decoder::new(buf_reader).unwrap();
-                    //let mut decoded_data = Vec::new();
-                    //decoder.read_to_end(&mut decoded_data).unwrap();
-                    //let decoded_string = String::from_utf8_lossy(&decoded_data);
-                    //// end decoding if needed
-
-                    //let mut rdr = csv::ReaderBuilder::new()
-                    //    .has_headers(true)
-                    //    .delimiter(b' ')
-                    //    .from_reader(decoded_string.as_bytes());
-
-                    //let mut rdr = csv::ReaderBuilder::new()
-                    //.has_headers(true)
-                    //.delimiter(b' ')
-                    //.from_reader(decoded_string.as_bytes());
-
-                    //type Record = (u64, f64, f64, f64, f64);
-
-                    //let Record_array = Record.into()
-                    let mut integer = 0;
-                    //println!("counter = {}, {:?}", integer, rdr);
                     for result in rdr.deserialize() {
-                        //println!("counter = {}, {:?}", integer, result);
-                        // We must tell Serde what type we want to deserialize into.
                         let record: Record = result.unwrap();
                         if record.id == *particle_id {
                             let deg_to_rad = std::f64::consts::PI / 180.;
@@ -404,9 +349,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             particle_olivine_b_axis_vectors.push(dcm.row(1).to_owned());
                             particle_olivine_c_axis_vectors.push(dcm.row(2).to_owned());
                         }
-
-                        //println!("counter = {}, id = {}, ophi = {}", integer, record.id, record.olivine_Euler_angles_phi.unwrap());
-                        integer = integer + 1;
                     }
 
                     // check if the particle id was found in this file, otherwise continue
@@ -441,12 +383,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         hexagonal_norm_square_p3: None,
                         isotropic_norm_square: None,
                     };
-                    /*let mut particle_x = 0.0;
-                    let mut particle_y = 0.0;
-                    let mut particle_z = 0.0;
-                    let mut particle_water = 0.0;
-                    let mut particle_anisotropic_percentage = 0.0;
-                    let mut particle_hexagonal_percentage = 0.0;*/
 
                     let particle_info_file = File::open(particle_info_file).unwrap();
                     let buf_reader = BufReader::new(particle_info_file);
@@ -455,25 +391,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .has_headers(true)
                         .delimiter(b' ')
                         .from_reader(buf_reader);
-                    //let mut rdr = csv::ReaderBuilder::new()
-                    //    .has_headers(true)
-                    //    .delimiter(b' ')
-                    //    .from_reader(particle_info_file);
 
                     for result in rdr.deserialize() {
                         // We must tell Serde what type we want to deserialize into.
                         let record: ParticleRecord = result.unwrap();
                         if record.id == *particle_id {
                             particle_record = record;
-                            /*particle_x = record.x;
-                            particle_y = record.y;
-                            particle_z = record.z.unwrap();
-                            particle_water = record.water;
-                            particle_anisotropic_percentage = record.anis_perc.unwrap();
-                            particle_hexagonal_percentage = record.hex_perc.unwrap();*/
                         }
                     }
-
                     // end retrieve anisotropy info
 
                     let sphere_points = 151;
@@ -761,12 +686,6 @@ fn make_polefigures(
     tetr_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     hexa_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    //let mut tric_perc_full = tric_unsorted.clone();
-    //let mut mono_perc_full = mono_unsorted.clone();
-    //let mut orth_perc_full = orth_unsorted.clone();
-    //let mut tetr_perc_full = tetr_unsorted.clone();
-    //let mut hexa_perc_full = hexa_unsorted.clone();
-
     let tric_perc_full = tric_unsorted
         .into_iter()
         .map(|v| (v / full_norm_square) * 100.)
@@ -787,12 +706,6 @@ fn make_polefigures(
         .iter()
         .map(|v| (v / full_norm_square) * 100.)
         .collect::<Vec<f64>>(); //.collect();
-
-    //let tric_perc_ani = tric_sorted.iter().map(|v| {(v/full_norm_square)*100.}).collect();
-    //let mono_perc_ani = mono_sorted.iter().map(|v| {(v/full_norm_square)*100.}).collect();
-    //let orth_perc_ani = orth_sorted.iter().map(|v| {(v/full_norm_square)*100.}).collect();
-    //let tetr_perc_ani = tetr_sorted.iter().map(|v| {(v/full_norm_square)*100.}).collect();
-    //let hexa_perc_ani = hexa_sorted.iter().map(|v| {(v/full_norm_square)*100.}).collect();
 
     let hp = Percentage {
         total: figure_height as f64,
