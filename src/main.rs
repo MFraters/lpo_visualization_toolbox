@@ -26,7 +26,7 @@ use serde_derive::{Deserialize, Serialize};
 
 use std::io::BufReader;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 enum LaticeAxes {
     AAxis,
     BAxis,
@@ -52,15 +52,16 @@ struct Config {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
 //#[serde(rename_all = "PascalCase")]
 struct Record {
     id: usize,
-    olivine_euler_angles_phi: Option<f64>,
-    olivine_euler_angles_theta: Option<f64>,
-    olivine_euler_angles_z: Option<f64>,
-    enstatite_euler_angles_phi: Option<f64>,
-    enstatite_euler_angles_theta: Option<f64>,
-    enstatite_euler_angles_z: Option<f64>,
+    olivine_Euler_angles_phi: Option<f64>,
+    olivine_Euler_angles_theta: Option<f64>,
+    olivine_Euler_angles_z: Option<f64>,
+    enstatite_Euler_angles_phi: Option<f64>,
+    enstatite_Euler_angles_theta: Option<f64>,
+    enstatite_Euler_angles_z: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,7 +91,7 @@ struct ParticleRecord {
     isotropic_norm_square: Option<f64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 enum Mineral {
     Olivine,
     Enstatite,
@@ -115,6 +116,7 @@ struct Opt {
     //input_dir: String,
 }
 
+#[derive(Clone)]
 struct PoleFigure {
     mineral: Mineral,
     latice_axis: LaticeAxes,
@@ -246,6 +248,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             //std::process::exit(0);
 
             let file_prefix = "particle_LPO/weighted_LPO";
+            //let file_prefix = "particle_LPO/LPO";
             let file_particle_prefix = "particle_LPO/particles";
             let mut rank_id = 0;
             println!(
@@ -257,9 +260,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut particle_olivine_a_axis_vectors = Vec::new();
                 let mut particle_olivine_b_axis_vectors = Vec::new();
                 let mut particle_olivine_c_axis_vectors = Vec::new();
-                //let mut particle_enstatite_a_axis_vectors = Vec::new();
-                //let mut particle_enstatite_b_axis_vectors = Vec::new();
-                //let mut particle_enstatite_c_axis_vectors = Vec::new();
+                let mut particle_enstatite_a_axis_vectors = Vec::new();
+                let mut particle_enstatite_b_axis_vectors = Vec::new();
+                let mut particle_enstatite_c_axis_vectors = Vec::new();
 
                 let mut file_found: bool = false;
                 while !file_found {
@@ -321,21 +324,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .delimiter(b' ')
                         .from_reader(decoded_reader.as_bytes());
 
+                    let mut integer = 0;
                     for result in rdr.deserialize() {
+                        //println!("counter = {}, result={:?}", integer, result);
                         let record: Record = result.unwrap();
                         if record.id == *particle_id {
                             let deg_to_rad = std::f64::consts::PI / 180.;
+
+                            // olivine
                             let dcm = dir_cos_matrix2(
-                                record.olivine_euler_angles_phi.unwrap() * deg_to_rad,
-                                record.olivine_euler_angles_theta.unwrap() * deg_to_rad,
-                                record.olivine_euler_angles_z.unwrap() * deg_to_rad,
+                                record.olivine_Euler_angles_phi.unwrap() * deg_to_rad,
+                                record.olivine_Euler_angles_theta.unwrap() * deg_to_rad,
+                                record.olivine_Euler_angles_z.unwrap() * deg_to_rad,
                             )
                             .unwrap();
 
                             particle_olivine_a_axis_vectors.push(dcm.row(0).to_owned());
                             particle_olivine_b_axis_vectors.push(dcm.row(1).to_owned());
                             particle_olivine_c_axis_vectors.push(dcm.row(2).to_owned());
+
+                            // enstatite
+                            let dcm = dir_cos_matrix2(
+                                record.enstatite_Euler_angles_phi.unwrap() * deg_to_rad,
+                                record.enstatite_Euler_angles_theta.unwrap() * deg_to_rad,
+                                record.enstatite_Euler_angles_z.unwrap() * deg_to_rad,
+                            )
+                            .unwrap();
+
+                            particle_enstatite_a_axis_vectors.push(dcm.row(0).to_owned());
+                            particle_enstatite_b_axis_vectors.push(dcm.row(1).to_owned());
+                            particle_enstatite_c_axis_vectors.push(dcm.row(2).to_owned());
                         }
+                        integer = integer + 1;
                     }
 
                     // check if the particle id was found in this file, otherwise continue
@@ -387,11 +407,101 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     // end retrieve anisotropy info
-
+                    println!("end retrieve antisotropy info");
+                    println!("create lambert equal area gridpoint");
                     let sphere_points = 151;
+
+                    let lambert =
+                        create_lambert_equal_area_gridpoint(sphere_points, "upper".to_string())
+                            .unwrap();
+
+                    println!("create sphere_point_grid");
+                    let mut sphere_point_grid = Array2::zeros((3, sphere_points * sphere_points));
+
+                    for i in 0..sphere_points {
+                        for j in 0..sphere_points {
+                            sphere_point_grid[[0, i * sphere_points + j]] = lambert.x[[i, j]];
+                            sphere_point_grid[[1, i * sphere_points + j]] = lambert.y[[i, j]];
+                            sphere_point_grid[[2, i * sphere_points + j]] = lambert.z[[i, j]];
+                        }
+                    }
+
+                    println!("fill olivine array");
+
                     let n_grains = particle_olivine_a_axis_vectors.len();
 
-                    let mut particle_olivine_a_axis_arrays = Array2::zeros((n_grains, 3)); // Pa
+                    let mut pole_figure_grid: Vec<Vec<PoleFigure>> =
+                        vec![
+                            vec![
+                                PoleFigure {
+                                    latice_axis: LaticeAxes::AAxis,
+                                    mineral: Mineral::Olivine,
+                                    counts: Array2::zeros((n_grains, 3))
+                                };
+                                config.pole_figures.minerals.len()
+                            ];
+                            config.pole_figures.axes.len()
+                        ];
+
+                    let mut figure_horizontal_axis = 0;
+                    for axis in config.pole_figures.axes.clone() {
+                        let mut figure_vertical_axis = 0;
+                        for mineral in config.pole_figures.minerals.clone() {
+                            println!(
+                                "figure_horizontal_axis:figure_vertical_axis = {}:{}",
+                                figure_horizontal_axis, figure_vertical_axis
+                            );
+
+                            let mut particle_arrays = Array2::zeros((n_grains, 3));
+                            for i in 0..n_grains {
+                                for j in 0..3 {
+                                    particle_arrays[[i, j]] = match axis {
+                                        LaticeAxes::AAxis => match mineral {
+                                            Mineral::Olivine => {
+                                                particle_olivine_a_axis_vectors[i][j]
+                                            }
+                                            Mineral::Enstatite => {
+                                                particle_enstatite_a_axis_vectors[i][j]
+                                            }
+                                        },
+                                        LaticeAxes::BAxis => match mineral {
+                                            Mineral::Olivine => {
+                                                particle_olivine_b_axis_vectors[i][j]
+                                            }
+                                            Mineral::Enstatite => {
+                                                particle_enstatite_b_axis_vectors[i][j]
+                                            }
+                                        },
+                                        LaticeAxes::CAxis => match mineral {
+                                            Mineral::Olivine => {
+                                                particle_olivine_c_axis_vectors[i][j]
+                                            }
+                                            Mineral::Enstatite => {
+                                                particle_enstatite_c_axis_vectors[i][j]
+                                            }
+                                        },
+                                    };
+                                }
+                            }
+                            let counts = gaussian_orientation_counts(
+                                &particle_arrays,
+                                &sphere_point_grid,
+                                sphere_points,
+                            )
+                            .unwrap();
+                            println!("counts shape = {:?}", counts.shape());
+
+                            pole_figure_grid[figure_horizontal_axis][figure_vertical_axis] =
+                                PoleFigure {
+                                    latice_axis: axis.clone(),
+                                    mineral: mineral.clone(),
+                                    counts: counts,
+                                };
+                            figure_vertical_axis += 1;
+                        }
+                        figure_horizontal_axis += 1;
+                    }
+                    /* let mut particle_olivine_a_axis_arrays = Array2::zeros((n_grains, 3)); // Pa
                     let mut particle_olivine_b_axis_arrays = Array2::zeros((n_grains, 3)); // Pb
                     let mut particle_olivine_c_axis_arrays = Array2::zeros((n_grains, 3)); // Pc
                     for i in 0..n_grains {
@@ -402,19 +512,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 particle_olivine_b_axis_vectors[i][j];
                             particle_olivine_c_axis_arrays[[i, j]] =
                                 particle_olivine_c_axis_vectors[i][j];
-                        }
-                    }
-
-                    let lambert =
-                        create_lambert_equal_area_gridpoint(sphere_points, "upper".to_string())
-                            .unwrap();
-                    let mut sphere_point_grid = Array2::zeros((3, sphere_points * sphere_points));
-
-                    for i in 0..sphere_points {
-                        for j in 0..sphere_points {
-                            sphere_point_grid[[0, i * sphere_points + j]] = lambert.x[[i, j]];
-                            sphere_point_grid[[1, i * sphere_points + j]] = lambert.y[[i, j]];
-                            sphere_point_grid[[2, i * sphere_points + j]] = lambert.z[[i, j]];
                         }
                     }
 
@@ -448,6 +545,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &counts_olivine_a_axis,
                         &counts_olivine_b_axis,
                         &counts_olivine_c_axis,
+                        &lambert,
+                        output_file,
+                        &particle_record,
+                        time,
+                    )
+                    .unwrap();*/
+
+                    make_polefigures(
+                        n_grains,
+                        &time_step,
+                        0,
+                        &pole_figure_grid,
                         &lambert,
                         output_file,
                         &particle_record,
@@ -498,6 +607,7 @@ fn gaussian_orientation_counts(
     sphere_point_grid: &Array2<f64>,
     sphere_points: usize,
 ) -> Result<Array2<f64>, Box<dyn std::error::Error>> {
+    println!("shape particles = {:?}", particles.shape());
     let npts = particles.shape()[0];
 
     // Choose k, which defines width of spherical gaussian  (table 3)
@@ -524,6 +634,7 @@ fn gaussian_orientation_counts(
     // distribution
     let counts = counts / (3. * std_dev);
 
+    println!("shape counts = {:?}", counts.shape());
     Ok(counts)
 }
 
@@ -531,9 +642,10 @@ fn make_polefigures(
     n_grains: usize,
     _time_step: &u64,
     particle_id: u64,
-    counts_a: &Array2<f64>,
-    counts_b: &Array2<f64>,
-    counts_c: &Array2<f64>,
+    //counts_a: &Array2<f64>,
+    //counts_b: &Array2<f64>,
+    //counts_c: &Array2<f64>,
+    pole_figure_grid: &Vec<Vec<PoleFigure>>,
     lambert: &Lambert,
     output_file: &Path,
     particle_record: &ParticleRecord,
@@ -556,10 +668,10 @@ fn make_polefigures(
         (1., LinSrgb::new(0.65, 0.0, 0.13)),
     ]);
 
-    let mut counts = Vec::new();
-    counts.push(counts_a);
-    counts.push(counts_b);
-    counts.push(counts_c);
+    //let mut counts = Vec::new();
+    //counts.push(counts_a);
+    //counts.push(counts_b);
+    //counts.push(counts_c);
     // Grid of points is a square and it extends outside the pole figure circumference.
     // Create mask to only plot color and contours within the pole figure
     let mut mask = lambert.x_plane.clone();
@@ -576,7 +688,6 @@ fn make_polefigures(
                 *a = 1.
             }
         });
-    let npts = counts_a.shape()[0];
 
     // Create a boundary circle for the Schmidt Net
     let bd_theta = Array::linspace(0., 2. * std::f64::consts::PI, 100);
@@ -594,40 +705,50 @@ fn make_polefigures(
                    //let f = 1.05; // factor to make plot limits slightly bigger than the circle
 
     // Determine which pole figures to plot based on size of countsX
-    let mut have_aplot = 0;
-    let mut have_bplot = 0;
-    let mut have_cplot = 0;
-    if counts_a.len() > 1 {
-        have_aplot = 1;
-    }
-    if counts_b.len() > 1 {
-        have_bplot = 1;
-    }
-    if counts_c.len() > 1 {
-        have_cplot = 1;
-    }
+    //let mut have_aplot = 0;
+    //let mut have_bplot = 0;
+    //let mut have_cplot = 0;
+    //if counts_a.len() > 1 {
+    //    have_aplot = 1;
+    //}
+    //if counts_b.len() > 1 {
+    //    have_bplot = 1;
+    //}
+    //if counts_c.len() > 1 {
+    //    have_cplot = 1;
+    //}
 
     let figure_height = 800;
-    let number_of_figures: usize = have_aplot + have_bplot + have_cplot;
-    if number_of_figures < 1 {
+    let number_of_figures_horizontal: usize = pole_figure_grid.len(); //have_aplot + have_bplot + have_cplot;
+    if number_of_figures_horizontal < 1 {
         println!("No figures to make. Exit.");
         return Ok(());
     }
 
-    let figure_width: u32 = number_of_figures as u32 * figure_height;
+    let number_of_figures_vertical: usize = pole_figure_grid[0].len();
+    if number_of_figures_vertical < 1 {
+        println!("No figures to make. Exit.");
+        return Ok(());
+    }
+
+    let total_figure_width: u32 = number_of_figures_horizontal as u32 * figure_height + 10;
+    let total_figure_height: u32 = number_of_figures_vertical as u32 * figure_height + 100;
 
     println!("    Before drawing: Elapsed time: {:.2?}", before.elapsed());
     let path_string = output_file.to_string_lossy().into_owned();
     println!("    save file to {}", path_string);
-    let root = BitMapBackend::new(&path_string, (figure_width + 10, figure_height + 150))
+    let root = BitMapBackend::new(&path_string, (total_figure_width, total_figure_height))
         .into_drawing_area();
     root.fill(&WHITE)?;
 
     println!("    made root: Elapsed time: {:.2?}", before.elapsed());
-    let (upper, lower) = root.split_vertically(150);
+    let (header, body) = root.split_vertically(150);
 
-    // Do stuff in upper
-
+    // Do stuff in header
+    println!(
+        "    start computing anisotropy: Elapsed time: {:.2?}",
+        before.elapsed()
+    );
     // preprocessing particle data:
     let pr = particle_record;
     let full_norm_square = particle_record.full_norm_square.unwrap();
@@ -699,23 +820,30 @@ fn make_polefigures(
         total: figure_height as f64,
     }; //(100/figure_height) as i32;
     let wp = Percentage {
-        total: figure_width as f64 / number_of_figures as f64,
+        total: total_figure_width as f64 / number_of_figures_horizontal as f64,
     };
 
+    println!(
+        "    end computing anisotropy: Elapsed time: {:.2?}",
+        before.elapsed()
+    );
+    println!("    start header: Elapsed time: {:.2?}", before.elapsed());
     let font_size = 35;
     let line_distance = 5.5; //6.;//5.5;
     let top_margin = 0.25;
     let left_margin = 0.5;
-    //let halfway_margin = 52.5; //.;
+    let halfway_margin = 52.5; //.;
     let font_type = "Inconsolata"; //"consolas";//"sans-serif"
 
-    upper
+    println!("    mid header 0: Elapsed time: {:.2?}", before.elapsed());
+    header
         .draw(&Text::new(
             format!("id={},time={:.5e}, position=({:.3e}:{:.3e}:{:.3e}), ODT={:.4}, grains={}, anisotropic%={:.4}",particle_id,time,particle_record.x,particle_record.y,particle_record.z.unwrap(),particle_record.olivine_deformation_type, n_grains,((total_anisotropy)/full_norm_square)*100.),
             ((wp.calc(left_margin) ) as i32, hp.calc(top_margin) as i32),
             (font_type, font_size).into_font(),
         ))?;
-    upper.draw(&Text::new(
+    println!("    mid header 1: Elapsed time: {:.2?}", before.elapsed());
+    header.draw(&Text::new(
         format!(
             "hex%={:.2},{:.2},{:.2}",
             hexa_perc_full[0], hexa_perc_full[1], hexa_perc_full[2]
@@ -726,7 +854,8 @@ fn make_polefigures(
         ),
         (font_type, font_size).into_font(),
     ))?;
-    upper.draw(&Text::new(
+    println!("    mid header 2: Elapsed time: {:.2?}", before.elapsed());
+    header.draw(&Text::new(
         format!(
             "h/a%={:.2},{:.2},{:.2}",
             ((hexa_unsorted[0]) / (total_anisotropy)) * 100.,
@@ -740,18 +869,20 @@ fn make_polefigures(
         (font_type, font_size).into_font(),
     ))?;
 
-    upper.draw(&Text::new(
+    println!("    mid header 3: Elapsed time: {:.2?}", before.elapsed());
+    header.draw(&Text::new(
         format!(
             "tet%={:.2},{:.2},{:.2}",
             tetr_perc_full[0], tetr_perc_full[1], tetr_perc_full[2]
         ),
         (
-            (left_margin + (figure_width as f64) * 0.2) as i32,
+            (left_margin + (total_figure_width as f64) * 0.2) as i32,
             hp.calc(top_margin + 1.0 * line_distance) as i32,
         ),
         (font_type, font_size).into_font(),
     ))?;
-    upper.draw(&Text::new(
+    println!("    mid header 4: Elapsed time: {:.2?}", before.elapsed());
+    header.draw(&Text::new(
         format!(
             "t/a%={:.2},{:.2},{:.2}",
             ((tetr_unsorted[0]) / (total_anisotropy)) * 100.,
@@ -759,23 +890,23 @@ fn make_polefigures(
             ((tetr_unsorted[2]) / (total_anisotropy)) * 100.
         ),
         (
-            (left_margin + (figure_width as f64) * 0.2) as i32,
+            (left_margin + (total_figure_width as f64) * 0.2) as i32,
             hp.calc(top_margin + 2.0 * line_distance) as i32,
         ),
         (font_type, font_size).into_font(),
     ))?;
-    upper.draw(&Text::new(
+    header.draw(&Text::new(
         format!(
             "ort%={:.2},{:.2},{:.2}",
             orth_perc_full[0], orth_perc_full[1], orth_perc_full[2]
         ),
         (
-            (left_margin + (figure_width as f64) * 0.4) as i32,
+            (left_margin + (total_figure_width as f64) * 0.4) as i32,
             hp.calc(top_margin + 1.0 * line_distance) as i32,
         ),
         (font_type, font_size).into_font(),
     ))?;
-    upper.draw(&Text::new(
+    header.draw(&Text::new(
         format!(
             "o/a%={:.2},{:.2},{:.2}",
             ((orth_unsorted[0]) / (total_anisotropy)) * 100.,
@@ -783,23 +914,23 @@ fn make_polefigures(
             ((orth_unsorted[2]) / (full_norm_square - isotropic)) * 100.
         ),
         (
-            (left_margin + (figure_width as f64) * 0.4) as i32,
+            (left_margin + (total_figure_width as f64) * 0.4) as i32,
             hp.calc(top_margin + 2.0 * line_distance) as i32,
         ),
         (font_type, font_size).into_font(),
     ))?;
-    upper.draw(&Text::new(
+    header.draw(&Text::new(
         format!(
             "mon%={:.2},{:.2},{:.2}",
             mono_perc_full[0], mono_perc_full[1], mono_perc_full[2]
         ),
         (
-            (left_margin + (figure_width as f64) * 0.6) as i32,
+            (left_margin + (total_figure_width as f64) * 0.6) as i32,
             hp.calc(top_margin + 1.0 * line_distance) as i32,
         ),
         (font_type, font_size).into_font(),
     ))?;
-    upper.draw(&Text::new(
+    header.draw(&Text::new(
         format!(
             "m/a%={:.2},{:.2},{:.2}",
             ((mono_unsorted[0]) / (total_anisotropy)) * 100.,
@@ -807,23 +938,23 @@ fn make_polefigures(
             ((mono_unsorted[2]) / (full_norm_square - isotropic)) * 100.
         ),
         (
-            (left_margin + (figure_width as f64) * 0.6) as i32,
+            (left_margin + (total_figure_width as f64) * 0.6) as i32,
             hp.calc(top_margin + 2.0 * line_distance) as i32,
         ),
         (font_type, font_size).into_font(),
     ))?;
-    upper.draw(&Text::new(
+    header.draw(&Text::new(
         format!(
             "tri%={:.2},{:.2},{:.2}",
             tric_perc_full[0], tric_perc_full[1], tric_perc_full[2]
         ),
         (
-            (left_margin + (figure_width as f64) * 0.8) as i32,
+            (left_margin + (total_figure_width as f64) * 0.8) as i32,
             hp.calc(top_margin + 1.0 * line_distance) as i32,
         ),
         (font_type, font_size).into_font(),
     ))?;
-    upper.draw(&Text::new(
+    header.draw(&Text::new(
         format!(
             "t/a%={:.2},{:.2},{:.2}",
             ((tric_unsorted[0]) / (total_anisotropy)) * 100.,
@@ -831,126 +962,189 @@ fn make_polefigures(
             ((tric_unsorted[2]) / (full_norm_square - isotropic)) * 100.
         ),
         (
-            (left_margin + (figure_width as f64) * 0.8) as i32,
+            (left_margin + (total_figure_width as f64) * 0.8) as i32,
             hp.calc(top_margin + 2.0 * line_distance) as i32,
         ),
         (font_type, font_size).into_font(),
     ))?;
 
-    // do stuff in lower:
+    println!("    end header: Elapsed time: {:.2?}", before.elapsed());
+    println!("    start body: Elapsed time: {:.2?}", before.elapsed());
+    // do stuff in body:
 
     let font_size = 45;
-    let (left, _right) = lower.split_horizontally(figure_width);
-    let drawing_areas = left.split_evenly((1, number_of_figures));
+    let (left, _right) = body.split_horizontally(total_figure_width);
+    let drawing_areas_horizontal = left.split_evenly((1, number_of_figures_horizontal));
 
-    println!("    number of figures = {}", number_of_figures);
-    for figure_number in 0..number_of_figures {
-        let mut chart = ChartBuilder::on(&drawing_areas[figure_number]).build_ranged(
-            -lambert.r_plane - 0.05..lambert.r_plane + 0.15,
-            -lambert.r_plane - 0.05..lambert.r_plane + 0.15,
-        )?;
+    //println!("    number of figures = {}", number_of_figures);
+    for horizontal_figure_number in 0..number_of_figures_horizontal {
+        let drawing_areas_vertical = drawing_areas_horizontal[horizontal_figure_number]
+            .split_evenly((number_of_figures_vertical, 1));
+        for vertical_figure_number in 0..number_of_figures_vertical {
+            println!(
+                "horizontal_figure_number:vertical_figure_number = {}:{}",
+                horizontal_figure_number, vertical_figure_number
+            );
 
-        // get max valuein counts_a
-        let mut max_count_value = 0.0;
-        for i in 0..npts - 1 {
-            for j in 0..npts - 1 {
-                if counts[figure_number][[i, j]] > max_count_value {
-                    max_count_value = counts[figure_number][[i, j]];
+            let latice_axis_string = match pole_figure_grid[horizontal_figure_number]
+                [vertical_figure_number]
+                .latice_axis
+            {
+                LaticeAxes::AAxis => "a-axis",
+                LaticeAxes::BAxis => "b-axis",
+                LaticeAxes::CAxis => "c-axis",
+            };
+            let mineral_string =
+                match pole_figure_grid[horizontal_figure_number][vertical_figure_number].mineral {
+                    Mineral::Olivine => "olivine",
+                    Mineral::Enstatite => "enstatite",
+                };
+            let mut chart = ChartBuilder::on(&drawing_areas_vertical[vertical_figure_number])
+                .build_ranged(
+                    -lambert.r_plane - 0.05..lambert.r_plane + 0.15,
+                    -lambert.r_plane - 0.05..lambert.r_plane + 0.15,
+                )?;
+            let counts = &pole_figure_grid[horizontal_figure_number][vertical_figure_number].counts;
+            let npts = 151; //counts.shape();// counts_a.shape()[0];
+
+            // get max valuein counts_a
+            let mut max_count_value = 0.0;
+            println!("shape = {:?}", counts.shape());
+            for i in 0..npts - 1 {
+                //println!("i = {}", i);
+                for j in 0..npts - 1 {
+                    if counts[[i, j]] > max_count_value {
+                        max_count_value = counts[[i, j]];
+                    }
                 }
             }
-        }
-
-        let mut current: Vec<Vec<Vec<(f64, f64)>>> = Vec::new();
-        for i in 0..npts - 1 {
-            let mut current_i: Vec<Vec<(f64, f64)>> = Vec::new();
-            for j in 0..npts - 1 {
-                current_i.push(vec![
-                    (lambert.x_plane[[i + 1, j]], lambert.z_plane[[i + 1, j]]),
-                    (
-                        lambert.x_plane[[i + 1, j + 1]],
-                        lambert.z_plane[[i + 1, j + 1]],
-                    ),
-                    (lambert.x_plane[[i, j + 1]], lambert.z_plane[[i, j + 1]]),
-                    (lambert.x_plane[[i, j]], lambert.z_plane[[i, j]]),
-                ]);
-            }
-            current.push(current_i);
-        }
-
-        let mut total_mask = mask.clone();
-        for i in 0..npts - 1 {
-            for j in 0..npts - 1 {
-                if !mask[[i, j]].is_nan()
-                    && !mask[[i, j + 1]].is_nan()
-                    && !mask[[i + 1, j + 1]].is_nan()
-                    && !mask[[i + 1, j]].is_nan()
-                {
-                    total_mask[[i, j]] = 1.0;
-                } else {
-                    total_mask[[i, j]] = std::f64::NAN;
-                }
-            }
-        }
-        println!(
-            "      before 1st drawing: Elapsed time: {:.2?}",
-            before.elapsed()
-        );
-        for i in 0..npts - 1 {
-            for j in 0..npts - 1 {
-                if !mask[[i, j]].is_nan() {
-                    chart.draw_series(std::iter::once(Polygon::new(
-                        current[i][j].clone(),
-                        &grad1.get(
-                            (counts[figure_number][[i, j]]).powf(gam) / (max_count_value.powf(gam)),
-                        ),
-                    )))?;
-                }
-            }
-        }
-
-        chart.draw_series(std::iter::once(PathElement::new(
-            circle_path.clone(),
-            Into::<ShapeStyle>::into(&BLACK).stroke_width(5),
-        )))?;
-
-        //chart.draw_series(std::iter::once(PathElement::new(vec![(0.,-400.),(0.,400.)],&BLACK)));
-        //chart.draw_series(std::iter::once(PathElement::new(vec![(-400.,0.),(400.,0.)],&BLACK)));
-
-        println!(
-            "      before 2st drawing: Elapsed time: {:.2?}",
-            before.elapsed()
-        );
-
-        match figure_number {
-            0 => {
-                //let x = -100e3;
-                //let y = -100.125e3;
-                drawing_areas[figure_number]
-                    .draw(&Text::new(
-                        format!("a-axis"),
+            let mut current: Vec<Vec<Vec<(f64, f64)>>> = Vec::new();
+            for i in 0..npts - 1 {
+                let mut current_i: Vec<Vec<(f64, f64)>> = Vec::new();
+                for j in 0..npts - 1 {
+                    current_i.push(vec![
+                        (lambert.x_plane[[i + 1, j]], lambert.z_plane[[i + 1, j]]),
                         (
-                            wp.calc(left_margin) as i32,
-                            hp.calc(top_margin + 1.0 * line_distance) as i32,
+                            lambert.x_plane[[i + 1, j + 1]],
+                            lambert.z_plane[[i + 1, j + 1]],
                         ),
-                        (font_type, font_size, FontStyle::Bold).into_font(),
-                    ))
-                    .unwrap();
-                drawing_areas[figure_number].draw(&Text::new(
-                    format!("max={:.3}", max_count_value),
+                        (lambert.x_plane[[i, j + 1]], lambert.z_plane[[i, j + 1]]),
+                        (lambert.x_plane[[i, j]], lambert.z_plane[[i, j]]),
+                    ]);
+                }
+                current.push(current_i);
+            }
+
+            let mut total_mask = mask.clone();
+            for i in 0..npts - 1 {
+                for j in 0..npts - 1 {
+                    if !mask[[i, j]].is_nan()
+                        && !mask[[i, j + 1]].is_nan()
+                        && !mask[[i + 1, j + 1]].is_nan()
+                        && !mask[[i + 1, j]].is_nan()
+                    {
+                        total_mask[[i, j]] = 1.0;
+                    } else {
+                        total_mask[[i, j]] = std::f64::NAN;
+                    }
+                }
+            }
+            println!(
+                "      before 1st drawing: Elapsed time: {:.2?}",
+                before.elapsed()
+            );
+
+            for i in 0..npts - 1 {
+                for j in 0..npts - 1 {
+                    if !mask[[i, j]].is_nan() {
+                        chart.draw_series(std::iter::once(Polygon::new(
+                            current[i][j].clone(),
+                            &grad1.get((counts[[i, j]]).powf(gam) / (max_count_value.powf(gam))),
+                        )))?;
+                    }
+                }
+            }
+            chart.draw_series(std::iter::once(PathElement::new(
+                circle_path.clone(),
+                Into::<ShapeStyle>::into(&BLACK).stroke_width(5),
+            )))?;
+
+            //chart.draw_series(std::iter::once(PathElement::new(vec![(0.,-400.),(0.,400.)],&BLACK)));
+            //chart.draw_series(std::iter::once(PathElement::new(vec![(-400.,0.),(400.,0.)],&BLACK)));
+
+            println!(
+                "      before 2st drawing: Elapsed time: {:.2?}",
+                before.elapsed()
+            );
+            drawing_areas_vertical[vertical_figure_number]
+                .draw(&Text::new(
+                    format!("{}", latice_axis_string),
                     (
                         wp.calc(left_margin) as i32,
-                        hp.calc(top_margin + 0.0 * line_distance) as i32,
+                        hp.calc(top_margin + 1.0 * line_distance) as i32,
                     ),
                     (font_type, font_size, FontStyle::Bold).into_font(),
-                ))?;
-                /*drawing_areas[figure_number]
-                .draw(&Text::new(
-                    format!("t={:.5}",time),
-                    ((wp.calc(left_margin+halfway_margin) ) as i32, hp.calc(top_margin + 1.0 * line_distance) as i32),
-                    (font_type, font_size).into_font(),
                 ))
-                .unwrap();*/
-                /*drawing_areas[figure_number].draw(&Text::new(
+                .unwrap();
+            drawing_areas_vertical[vertical_figure_number].draw(&Text::new(
+                format!("max={:.3}", max_count_value),
+                (
+                    wp.calc(left_margin) as i32,
+                    hp.calc(top_margin + 0.0 * line_distance) as i32,
+                ),
+                (font_type, font_size, FontStyle::Bold).into_font(),
+            ))?;
+            drawing_areas_vertical[vertical_figure_number].draw(&Text::new(
+                format!("{}", mineral_string),
+                (
+                    wp.calc(left_margin + halfway_margin + 10.) as i32,
+                    hp.calc(top_margin + 0.0 * line_distance) as i32,
+                ),
+                (font_type, font_size, FontStyle::Bold).into_font(),
+            ))?;
+            drawing_areas_vertical[vertical_figure_number].draw(&Text::new(
+                format!("Z"),
+                (wp.calc(46.4) as i32, (hp.calc(11.) - 85.) as i32),
+                (font_type, font_size).into_font(),
+            ))?;
+            drawing_areas_vertical[vertical_figure_number].draw(&Text::new(
+                format!("X"),
+                (wp.calc(96.0) as i32, (hp.calc(61.75) - 125.) as i32),
+                (font_type, font_size).into_font(),
+            ))?;
+            // end of for loop
+        }
+
+        /*match figure_number {
+        0 => {
+            //let x = -100e3;
+            //let y = -100.125e3;
+            drawing_areas[figure_number]
+                .draw(&Text::new(
+                    format!("a-axis"),
+                    (
+                        wp.calc(left_margin) as i32,
+                        hp.calc(top_margin + 1.0 * line_distance) as i32,
+                    ),
+                    (font_type, font_size, FontStyle::Bold).into_font(),
+                ))
+                .unwrap();
+            drawing_areas[figure_number].draw(&Text::new(
+                format!("max={:.3}", max_count_value),
+                (
+                    wp.calc(left_margin) as i32,
+                    hp.calc(top_margin + 0.0 * line_distance) as i32,
+                ),
+                (font_type, font_size, FontStyle::Bold).into_font(),
+            ))?;
+            / *drawing_areas[figure_number]
+            .draw(&Text::new(
+                format!("t={:.5}",time),
+                ((wp.calc(left_margin+halfway_margin) ) as i32, hp.calc(top_margin + 1.0 * line_distance) as i32),
+                (font_type, font_size).into_font(),
+            ))
+            .unwrap();*/
+        /*drawing_areas[figure_number].draw(&Text::new(
                     format!("W={:.5}", particle_record.water),
                     (
                         wp.calc(left_margin+halfway_margin) as i32,
@@ -965,7 +1159,7 @@ fn make_polefigures(
                         hp.calc(top_margin + 2. * line_distance) as i32,
                     ),
                     (font_type, font_size).into_font(),
-                ))?;*/
+                ))?;* /
                 drawing_areas[figure_number].draw(&Text::new(
                     format!("Z"),
                     (wp.calc(46.4) as i32, (hp.calc(11.) - 85.) as i32),
@@ -1052,7 +1246,7 @@ fn make_polefigures(
                 ))?;
             }
             _ => println!("Error: wrong figure number!"),
-        }
+        }*/
 
         println!(
             "      made one of the figures: Elapsed time: {:.2?}",
